@@ -5,6 +5,7 @@ import graphene
 from claim.apps import ClaimConfig
 from core.gql.export_mixin import ExportableQueryMixin
 from core.schema import signal_mutation_module_validate
+from core.services import wait_for_mutation
 from core.utils import filter_validity
 from django.db.models import Q
 from django.core.exceptions import PermissionDenied
@@ -181,6 +182,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             filters += filter_validity(**kwargs)
         client_mutation_id = kwargs.get("client_mutation_id", None)
         if client_mutation_id:
+            wait_for_mutation(client_mutation_id)
             filters.append(
                 Q(mutations__mutation__client_mutation_id=client_mutation_id))
         parent_location = kwargs.get('parent_location')
@@ -270,6 +272,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             filters += filter_validity(**kwargs)
         client_mutation_id = kwargs.get("client_mutation_id", None)
         if client_mutation_id:
+            wait_for_mutation(client_mutation_id)
             filters.append(
                 Q(mutations__mutation__client_mutation_id=client_mutation_id))
         parent_location = kwargs.get('parent_location')
