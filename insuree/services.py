@@ -334,8 +334,10 @@ class InsureeService:
         insuree = None
         if "uuid" in data:
             insuree = Insuree.objects.filter(uuid=data["uuid"]).first()
+            self._update(insuree, data)
         elif 'chf_id' in data and not create_only:
             insuree = Insuree.objects.filter(chf_id=data["chf_id"], *filter_validity()).first()
+            self._update(insuree, data)
         if status in [InsureeStatus.INACTIVE, InsureeStatus.DEAD]:
             status_reason = InsureeStatusReason.objects.get(code=data.get('status_reason', None),
                                                             validity_to__isnull=True)
@@ -468,6 +470,13 @@ class InsureeService:
                     'message': _("insuree.mutation.failed_to_cancel_insuree_policies") % {'chfid': insuree.chfid},
                     'detail': insuree.uuid}]
             }
+
+    def _update(self, insuree, data):
+        insuree.save_history()
+        # reset the non required fields
+        # (each update is 'complete', necessary to be able to set 'null')
+        reset_insuree_before_update(insuree)
+        [setattr(insuree, key, data[key]) for key in data]
 
 
 class InsureePolicyService:
