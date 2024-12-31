@@ -337,7 +337,6 @@ class InsureeService:
             self._update(insuree, data)
         elif 'chf_id' in data and not create_only:
             insuree = Insuree.objects.filter(chf_id=data["chf_id"], *filter_validity()).first()
-            self._update(insuree, data)
         if status in [InsureeStatus.INACTIVE, InsureeStatus.DEAD]:
             status_reason = InsureeStatusReason.objects.get(code=data.get('status_reason', None),
                                                             validity_to__isnull=True)
