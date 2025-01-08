@@ -334,7 +334,6 @@ class InsureeService:
         insuree = None
         if "uuid" in data:
             insuree = Insuree.objects.filter(uuid=data["uuid"]).first()
-            self._update(insuree, data)
         elif 'chf_id' in data and not create_only:
             insuree = Insuree.objects.filter(chf_id=data["chf_id"], *filter_validity()).first()
         if status in [InsureeStatus.INACTIVE, InsureeStatus.DEAD]:
@@ -349,6 +348,8 @@ class InsureeService:
             raise ValidationError("mutation.insuree.fsp_required")
         if not insuree:
             insuree = Insuree(**data)
+        else:
+            self._update(insuree, data)
 
         return self._create_or_update(
             insuree, photo_data,
