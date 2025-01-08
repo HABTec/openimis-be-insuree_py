@@ -348,6 +348,8 @@ class InsureeService:
             raise ValidationError("mutation.insuree.fsp_required")
         if not insuree:
             insuree = Insuree(**data)
+        else:
+            self._update(insuree, data)
 
         return self._create_or_update(
             insuree, photo_data,
@@ -468,6 +470,13 @@ class InsureeService:
                     'message': _("insuree.mutation.failed_to_cancel_insuree_policies") % {'chfid': insuree.chfid},
                     'detail': insuree.uuid}]
             }
+
+    def _update(self, insuree, data):
+        insuree.save_history()
+        # reset the non required fields
+        # (each update is 'complete', necessary to be able to set 'null')
+        reset_insuree_before_update(insuree)
+        [setattr(insuree, key, data[key]) for key in data]
 
 
 class InsureePolicyService:
