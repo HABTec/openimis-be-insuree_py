@@ -39,6 +39,7 @@ DEFAULT_CFG = {
     "insuree_fsp_mandatory": False,
     "insuree_as_worker": False,
     "is_insuree_photo_required": False,
+    "no_location_check": False,
 }
 
 
@@ -77,6 +78,7 @@ class InsureeConfig(AppConfig):
     insuree_fsp_mandatory = None
     insuree_as_worker = None
     is_insuree_photo_required = None
+    no_location_check = None
 
     def __load_config(self, cfg):
         for field in cfg:

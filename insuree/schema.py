@@ -288,7 +288,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             filters += [Q(**{f: parent_location})]
 
         # Limit the list by the logged in user location mapping
-        if not info.context.user._u.is_imis_admin:
+        if not info.context.user._u.is_imis_admin and not InsureeConfig.no_location_check:
             filters += [LocationManager().build_user_location_filter_query(info.context.user._u,
                                                                            prefix='location__parent__parent', loc_types=['D'])]
 

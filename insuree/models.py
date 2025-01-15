@@ -138,7 +138,7 @@ class Family(core_models.VersionedModel, core_models.ExtendableModel):
             queryset = queryset.exclude(
                 members__chf_id__in=InsureeConfig.excluded_insuree_chfids
             )
-        if settings.ROW_SECURITY and not user.is_imis_admin:
+        if settings.ROW_SECURITY and not user.is_imis_admin and not InsureeConfig.no_location_check:
             from location.schema import LocationManager
             return queryset.filter(
                 LocationManager().build_user_location_filter_query(user._u, prefix='location__parent__parent', loc_types=['D']))
@@ -314,7 +314,7 @@ class Insuree(core_models.VersionedModel, core_models.ExtendableModel):
         # The insuree "health facility" is the "First Point of Service"
         # (aka the 'preferred/reference' HF for an insuree)
         # ... so not to be used as 'strict filtering'
-        if settings.ROW_SECURITY and not user.is_imis_admin:
+        if settings.ROW_SECURITY and not user.is_imis_admin and not InsureeConfig.no_location_check:
             return queryset.filter(
                 Q(LocationManager().build_user_location_filter_query(user._u, prefix='current_village__parent__parent', loc_types=['D']) |
                   LocationManager().build_user_location_filter_query(user._u, prefix='family__location__parent__parent', loc_types=['D']))
