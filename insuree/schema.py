@@ -199,7 +199,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             filters += [(Q(current_village__isnull=False) & Q(**{current_village: parent_location})) |
                         (Q(current_village__isnull=True) & Q(**{family_location: parent_location}))]
 
-        if not info.context.user._u.is_imis_admin and (kwargs.get('ignore_location') == False or kwargs.get('ignore_location') is None):
+        if not info.context.user._u.is_imis_admin and (kwargs.get('ignore_location') == False or kwargs.get('ignore_location') is None) and not InsureeConfig.no_location_check:
             # Limit the list by the logged in user location mapping
             filters += [Q(LocationManager().build_user_location_filter_query(info.context.user._u, prefix='current_village__parent__parent', loc_types=['D']) |
                         LocationManager().build_user_location_filter_query(info.context.user._u, prefix='family__location__parent__parent', loc_types=['D']))]
@@ -288,7 +288,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             filters += [Q(**{f: parent_location})]
 
         # Limit the list by the logged in user location mapping
-        if not info.context.user._u.is_imis_admin:
+        if not info.context.user._u.is_imis_admin and not InsureeConfig.no_location_check:
             filters += [LocationManager().build_user_location_filter_query(info.context.user._u,
                                                                            prefix='location__parent__parent', loc_types=['D'])]
 

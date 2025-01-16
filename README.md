@@ -79,6 +79,7 @@ Rights required:
   for adults (default: `60`)
 * renewal_photo_age_child": age (in months) of a picture due for renewal
   for children (default: `12`)
+* no_location_check : if implementation is at a national scale without any Location check for all Users (default: False)
 
 ## openIMIS Modules Dependencies
 * location.models.HealthFacility
