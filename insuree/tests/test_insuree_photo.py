@@ -33,9 +33,6 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
     photo_base64 = None
     test_photo_path, test_photo_uuid = None, None
 
-    class BaseTestContext:
-        def __init__(self, user):
-            self.user = user
     @classmethod
     def setUpTestData(cls):
         cls._TEST_USER_NAME = "TestUserTest2"
@@ -86,7 +83,7 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
         result = self.__call_photo_mutation(photo_uuid=self.test_photo_uuid)
         self.assertEqual(self.insuree.photo.photo, self.photo_base64)
         result = self.__call_photo_mutation(self.photo_base64_2, photo_uuid=self.test_photo_uuid)
-        self.get_mutation_result(result['data']['updateInsuree']['clientMutationId'], self.test_user_token)
+        
         
     def test_pull_photo_db(self):
         self.__call_photo_mutation()
@@ -116,14 +113,16 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
         if not photo:
             photo = self.photo_base64
         mutation = self.__update_photo_mutation(photo, photo_uuid=photo_uuid)
-        context = self.BaseTestContext(self.test_user)
-        result = self.insuree_client.execute(mutation, context=context)
+        context = self.BaseTestContext(self.test_user, data=mutation)
+        
+        result = self.send_mutation_raw(mutation, self.test_user_token, variables_param=None, follow=True)
+        
         self.insuree = Insuree.objects.get(pk=self.insuree.pk)
         return result
 
     def __call_photo_query(self):
         query = self.__get_insuree_query()
-        context = self.BaseTestContext(self.test_user)
+        context = self.BaseTestContext(self.test_user, data=query)
         return self.insuree_client.execute(query, context=context)
 
     def __update_photo_mutation(self, photo, photo_uuid=None):
