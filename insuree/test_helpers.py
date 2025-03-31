@@ -97,12 +97,12 @@ def create_test_insuree(with_family=True, is_head=False, custom_props=None, fami
         insuree.family = family
         insuree.save()
         
-        insuree2 =  create_test_insuree(
-            with_family=False, 
-            is_head=False, 
-            custom_props={'family': family}, 
-            family_custom_props=None
-        )
+        # insuree2 =  create_test_insuree(
+        #     with_family=False, 
+        #     is_head=False, 
+        #     custom_props={'family': family}, 
+        #     family_custom_props=None
+        # )
 
     
     family_custom_props = {}

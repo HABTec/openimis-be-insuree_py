@@ -13,7 +13,7 @@ from insuree.models import Insuree
 from insuree.test_helpers import create_test_insuree
 from location.models import UserDistrict
 from core.services import create_or_update_interactive_user, create_or_update_core_user
-from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase
+from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase, BaseTestContext
 from insuree.services import validate_insuree_number
 from unittest.mock import ANY
 from django.conf import settings
@@ -52,7 +52,7 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
         cls.photo_base64_2 = "iVBORw03GgoAAAANSUhEUgAAAQAAAAEAAQMAAABmvDolAAAAA1BMVEW10NBjBBbqAAAAH0lEQVRoge3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAvg0hAAABmmDh1QAAAABJRU5ErkJggg=="
         cls.test_user = cls.__create_user_interactive_core()
         cls.insuree = create_test_insuree()
-        cls.test_user_token = get_token(cls.test_user, cls.BaseTestContext(user=cls.test_user))
+        cls.test_user_token = get_token(cls.test_user, BaseTestContext(user=cls.test_user))
 
         #Add the disctict on the user
         UserDistrict.objects.create(
@@ -113,7 +113,7 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
         if not photo:
             photo = self.photo_base64
         mutation = self.__update_photo_mutation(photo, photo_uuid=photo_uuid)
-        context = self.BaseTestContext(self.test_user, data=mutation)
+        context = BaseTestContext(self.test_user, data=mutation)
         
         result = self.send_mutation_raw(mutation, self.test_user_token, variables_param=None, follow=True)
         
@@ -122,7 +122,7 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
 
     def __call_photo_query(self):
         query = self.__get_insuree_query()
-        context = self.BaseTestContext(self.test_user, data=query)
+        context = BaseTestContext(self.test_user, data=query).get_request()
         return self.insuree_client.execute(query, context=context)
 
     def __update_photo_mutation(self, photo, photo_uuid=None):
