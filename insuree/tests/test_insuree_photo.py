@@ -52,7 +52,7 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
         cls.photo_base64_2 = "iVBORw03GgoAAAANSUhEUgAAAQAAAAEAAQMAAABmvDolAAAAA1BMVEW10NBjBBbqAAAAH0lEQVRoge3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAvg0hAAABmmDh1QAAAABJRU5ErkJggg=="
         cls.test_user = cls.__create_user_interactive_core()
         cls.insuree = create_test_insuree()
-        cls.test_user_token = get_token(cls.test_user, BaseTestContext(user=cls.test_user))
+        cls.test_user_token = BaseTestContext(user=cls.test_user).get_jwt()
 
         #Add the disctict on the user
         UserDistrict.objects.create(

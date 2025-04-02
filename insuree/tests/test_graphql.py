@@ -37,12 +37,12 @@ class InsureeGQLTestCase(openIMISGraphQLTestCase):
         cls.test_village = create_test_village()
         cls.test_insuree = create_test_insuree(with_family=True, is_head=True, custom_props={'current_village':cls.test_village}, family_custom_props={'location':cls.test_village})
         cls.admin_user = create_test_interactive_user(username="testLocationAdmin")
-        cls.admin_token = get_token(cls.admin_user, BaseTestContext(user=cls.admin_user))
+        cls.admin_token = BaseTestContext(user=cls.admin_user).get_jwt()
         cls.ca_user = create_test_interactive_user(username="testLocationNoRight", roles=[9])
-        cls.ca_token = get_token(cls.ca_user, BaseTestContext(user=cls.ca_user))
+        cls.ca_token = BaseTestContext(user=cls.ca_user).get_jwt()
         cls.admin_dist_user = create_test_interactive_user(username="testLocationDist")
         assign_user_districts(cls.admin_dist_user, ["R1D1", "R2D1", "R2D2", "R2D1", cls.test_village.parent.parent.code])
-        cls.admin_dist_token = get_token(cls.admin_dist_user, BaseTestContext(user=cls.admin_dist_user))
+        cls.admin_dist_token = BaseTestContext(user=cls.admin_dist_user).get_jwt()
         cls.photo_base64 = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEAAQMAAABmvDolAAAAA1BMVEW10NBjBBbqAAAAH0lEQVRoge3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAvg0hAAABmmDh1QAAAABJRU5ErkJggg=="
 
         cls.photo_base64_2 = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEAAQMAAABmvDolAAAAA1BMVEW10NBjBBbrAAAAH0lEQVRoge3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAvg0hAAABmmDh1QAAAABJRU5ErkJggg=="

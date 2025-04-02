@@ -26,7 +26,7 @@ class ReportAPITests( APITestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.admin_user = create_test_interactive_user(username="testLocationAdmin")
-        cls.admin_token = get_token(cls.admin_user, BaseTestContext(user=cls.admin_user))
+        cls.admin_token = BaseTestContext(user=cls.admin_user).get_jwt()
         
     def test_single_enrolled_families_report(self):
         headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"}
