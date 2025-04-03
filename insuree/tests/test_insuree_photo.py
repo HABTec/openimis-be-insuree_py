@@ -13,7 +13,7 @@ from insuree.models import Insuree
 from insuree.test_helpers import create_test_insuree
 from location.models import UserDistrict
 from core.services import create_or_update_interactive_user, create_or_update_core_user
-from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase
+from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase, BaseTestContext
 from insuree.services import validate_insuree_number
 from unittest.mock import ANY
 from django.conf import settings
@@ -33,9 +33,6 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
     photo_base64 = None
     test_photo_path, test_photo_uuid = None, None
 
-    class BaseTestContext:
-        def __init__(self, user):
-            self.user = user
     @classmethod
     def setUpTestData(cls):
         cls._TEST_USER_NAME = "TestUserTest2"
@@ -55,7 +52,7 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
         cls.photo_base64_2 = "iVBORw03GgoAAAANSUhEUgAAAQAAAAEAAQMAAABmvDolAAAAA1BMVEW10NBjBBbqAAAAH0lEQVRoge3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAvg0hAAABmmDh1QAAAABJRU5ErkJggg=="
         cls.test_user = cls.__create_user_interactive_core()
         cls.insuree = create_test_insuree()
-        cls.test_user_token = get_token(cls.test_user, cls.BaseTestContext(user=cls.test_user))
+        cls.test_user_token = BaseTestContext(user=cls.test_user).get_jwt()
 
         #Add the disctict on the user
         UserDistrict.objects.create(
@@ -86,7 +83,7 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
         result = self.__call_photo_mutation(photo_uuid=self.test_photo_uuid)
         self.assertEqual(self.insuree.photo.photo, self.photo_base64)
         result = self.__call_photo_mutation(self.photo_base64_2, photo_uuid=self.test_photo_uuid)
-        self.get_mutation_result(result['data']['updateInsuree']['clientMutationId'], self.test_user_token)
+        
         
     def test_pull_photo_db(self):
         self.__call_photo_mutation()
@@ -116,14 +113,16 @@ class InsureePhotoTest(openIMISGraphQLTestCase):
         if not photo:
             photo = self.photo_base64
         mutation = self.__update_photo_mutation(photo, photo_uuid=photo_uuid)
-        context = self.BaseTestContext(self.test_user)
-        result = self.insuree_client.execute(mutation, context=context)
+        context = BaseTestContext(self.test_user, data=mutation)
+        
+        result = self.send_mutation_raw(mutation, self.test_user_token, variables_param=None, follow=True)
+        
         self.insuree = Insuree.objects.get(pk=self.insuree.pk)
         return result
 
     def __call_photo_query(self):
         query = self.__get_insuree_query()
-        context = self.BaseTestContext(self.test_user)
+        context = BaseTestContext(self.test_user, data=query).get_request()
         return self.insuree_client.execute(query, context=context)
 
     def __update_photo_mutation(self, photo, photo_uuid=None):

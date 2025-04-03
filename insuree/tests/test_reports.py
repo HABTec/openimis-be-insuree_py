@@ -6,13 +6,11 @@ from graphql_jwt.shortcuts import get_token
 from core.models import User
 from django.conf import settings
 from django.db import connection
+from core.models.openimis_graphql_test_case import BaseTestContext
 
 from unittest.mock import patch, PropertyMock
 
-@dataclass
-class DummyContext:
-    """ Just because we need a context to generate. """
-    user: User
+
 
 
 class ReportAPITests( APITestCase):
@@ -28,7 +26,7 @@ class ReportAPITests( APITestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.admin_user = create_test_interactive_user(username="testLocationAdmin")
-        cls.admin_token = get_token(cls.admin_user, DummyContext(user=cls.admin_user))
+        cls.admin_token = BaseTestContext(user=cls.admin_user).get_jwt()
         
     def test_single_enrolled_families_report(self):
         headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"}

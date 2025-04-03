@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from django.utils.translation import gettext as _
 from core.models import User, filter_validity
-from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase
+from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase, BaseTestContext
 from core.test_helpers import create_test_interactive_user
 from django.conf import settings
 from graphene_django.utils.testing import GraphQLTestCase
@@ -20,11 +20,6 @@ from insuree.models import Family
 from insuree.apps import InsureeConfig
 # from openIMIS import schema
 
-
-@dataclass
-class DummyContext:
-    """ Just because we need a context to generate. """
-    user: User
 
 
 
@@ -42,12 +37,12 @@ class InsureeGQLTestCase(openIMISGraphQLTestCase):
         cls.test_village = create_test_village()
         cls.test_insuree = create_test_insuree(with_family=True, is_head=True, custom_props={'current_village':cls.test_village}, family_custom_props={'location':cls.test_village})
         cls.admin_user = create_test_interactive_user(username="testLocationAdmin")
-        cls.admin_token = get_token(cls.admin_user, DummyContext(user=cls.admin_user))
+        cls.admin_token = BaseTestContext(user=cls.admin_user).get_jwt()
         cls.ca_user = create_test_interactive_user(username="testLocationNoRight", roles=[9])
-        cls.ca_token = get_token(cls.ca_user, DummyContext(user=cls.ca_user))
+        cls.ca_token = BaseTestContext(user=cls.ca_user).get_jwt()
         cls.admin_dist_user = create_test_interactive_user(username="testLocationDist")
         assign_user_districts(cls.admin_dist_user, ["R1D1", "R2D1", "R2D2", "R2D1", cls.test_village.parent.parent.code])
-        cls.admin_dist_token = get_token(cls.admin_dist_user, DummyContext(user=cls.admin_dist_user))
+        cls.admin_dist_token = BaseTestContext(user=cls.admin_dist_user).get_jwt()
         cls.photo_base64 = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEAAQMAAABmvDolAAAAA1BMVEW10NBjBBbqAAAAH0lEQVRoge3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAvg0hAAABmmDh1QAAAABJRU5ErkJggg=="
 
         cls.photo_base64_2 = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEAAQMAAABmvDolAAAAA1BMVEW10NBjBBbrAAAAH0lEQVRoge3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAvg0hAAABmmDh1QAAAABJRU5ErkJggg=="
