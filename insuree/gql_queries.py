@@ -152,6 +152,7 @@ class InsureeGQLType(DjangoObjectType):
             "dob": ["exact", "lt", "lte", "gt", "gte", "isnull"],
             "head": ["exact"],
             "passport": ["exact", "istartswith", "icontains", "iexact", "isnull"],
+            "disability_status": ["exact", "isnull"],
             "gender__code": ["exact", "isnull"],
             "marital": ["exact", "isnull"],
             "status": ["exact"],

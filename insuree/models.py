@@ -1,8 +1,8 @@
 import os.path
 import uuid
-
-import core
+from django.utils.translation import gettext_lazy as _
 from core import models as core_models
+from core import fields as core_fields
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
@@ -42,7 +42,7 @@ class InsureePhoto(core_models.VersionedModel):
     photo = models.TextField(blank=True, null=True)
     # No FK in database (so value may not be an existing officer.id !)
     officer_id = models.IntegerField(db_column='OfficerID', blank=True, null=True)
-    date = core.fields.DateField(db_column='PhotoDate', blank=True, null=True)
+    date = core_fields.DateField(db_column='PhotoDate', blank=True, null=True)
     audit_user_id = models.IntegerField(
         db_column='AuditUserID', blank=True, null=True)
     # rowid = models.TextField(db_column='RowID', blank=True, null=True)
@@ -219,6 +219,24 @@ class InsureeStatusReason(core_models.VersionedModel):
         db_table = 'tblInsureeStatusReason'
 
 
+class DisabilityStatus(models.TextChoices):
+    NO_DISABILITY = 'no_disability', _('No Disability')
+    PHYSICAL_DISABILITY = 'physical_disability', _('Physical Disability')
+    VISUAL_IMPAIRMENT = 'visual_impairment', _('Visual Impairment')
+    HEARING_IMPAIRMENT = 'hearing_impairment', _('Hearing Impairment')
+    SPEECH_DISABILITY = 'speech_disability', _('Speech Disability')
+    INTELLECTUAL_DISABILITY = 'intellectual_disability', _('Intellectual Disability')
+    MENTAL_DISORDER = 'mental_disorder', _('Mental Disorder')
+    AUTISM_SPECTRUM_DISORDER = 'autism_spectrum_disorder', _('Autism Spectrum Disorder')
+    CEREBRAL_PALSY = 'cerebral_palsy', _('Cerebral Palsy')
+    MULTIPLE_SCLEROSIS = 'multiple_sclerosis', _('Multiple Sclerosis')
+    PARKINSONS_DISEASE = 'parkinsons_disease', _('Parkinson\'s Disease')
+    SPINAL_CORD_INJURY = 'spinal_cord_injury', _('Spinal Cord Injury')
+    AMPUTATION = 'amputation', _('Amputation')
+    CHRONIC_NEUROLOGICAL_CONDITION = 'chronic_neurological_condition', _('Chronic Neurological Condition')
+    OTHER_DISABILITY = 'other_disability', _('Other Disability')
+
+
 class Insuree(core_models.VersionedModel, core_models.ExtendableModel):
     id = models.AutoField(db_column='InsureeID', primary_key=True)
     uuid = models.CharField(db_column='InsureeUUID', max_length=36, default=uuid.uuid4, unique=True)
@@ -232,7 +250,7 @@ class Insuree(core_models.VersionedModel, core_models.ExtendableModel):
 
     gender = models.ForeignKey(Gender, models.DO_NOTHING, db_column='Gender', blank=True, null=True,
                                related_name='insurees')
-    dob = core.fields.DateField(db_column='DOB', blank=True, null=True)
+    dob = core_fields.DateField(db_column='DOB', blank=True, null=True)
 
     def age(self, reference_date=None):
         if self.dob:
@@ -261,7 +279,15 @@ class Insuree(core_models.VersionedModel, core_models.ExtendableModel):
         location_models.Location, models.DO_NOTHING, db_column='CurrentVillage', blank=True, null=True)
     photo = models.OneToOneField(InsureePhoto, models.DO_NOTHING,
                                  db_column='PhotoID', blank=True, null=True, related_name='+')
-    photo_date = core.fields.DateField(db_column='PhotoDate', blank=True, null=True)
+    photo_date = core_fields.DateField(db_column='PhotoDate', blank=True, null=True)
+    disability_status = models.CharField(
+        db_column='DisabilityStatus',
+        max_length=50,
+        choices=DisabilityStatus.choices,
+        default=DisabilityStatus.NO_DISABILITY,
+        blank=True,
+        null=True
+    )
     card_issued = models.BooleanField(db_column='CardIssued', blank=True, null=True)
     relationship = models.ForeignKey(
         Relation, models.DO_NOTHING, db_column='Relationship', blank=True, null=True,
@@ -282,7 +308,7 @@ class Insuree(core_models.VersionedModel, core_models.ExtendableModel):
     status = models.CharField(
         max_length=2, choices=InsureeStatus.choices, default=InsureeStatus.ACTIVE, blank=True, null=True
     )
-    status_date = core.fields.DateField(db_column='status_date', null=True, blank=True)
+    status_date = core_fields.DateField(db_column='status_date', null=True, blank=True)
     status_reason = models.ForeignKey(InsureeStatusReason, models.DO_NOTHING, db_column='StatusReason',
                                       blank=True, null=True, related_name='insurees')
     audit_user_id = models.IntegerField(db_column='AuditUserID')
@@ -335,10 +361,10 @@ class InsureePolicy(core_models.VersionedModel):
     policy = models.ForeignKey("policy.Policy", models.DO_NOTHING, db_column='PolicyId',
                                related_name="insuree_policies")
 
-    enrollment_date = core.fields.DateField(db_column='EnrollmentDate', blank=True, null=True)
-    start_date = core.fields.DateField(db_column='StartDate', blank=True, null=True)
-    effective_date = core.fields.DateField(db_column='EffectiveDate', blank=True, null=True)
-    expiry_date = core.fields.DateField(db_column='ExpiryDate', blank=True, null=True)
+    enrollment_date = core_fields.DateField(db_column='EnrollmentDate', blank=True, null=True)
+    start_date = core_fields.DateField(db_column='StartDate', blank=True, null=True)
+    effective_date = core_fields.DateField(db_column='EffectiveDate', blank=True, null=True)
+    expiry_date = core_fields.DateField(db_column='ExpiryDate', blank=True, null=True)
 
     offline = models.BooleanField(db_column='isOffline', blank=True, null=True)
     audit_user_id = models.IntegerField(db_column='AuditUserID')
