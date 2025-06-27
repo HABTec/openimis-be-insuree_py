@@ -288,6 +288,16 @@ class Insuree(core_models.VersionedModel, core_models.ExtendableModel):
         blank=True,
         null=True
     )
+    is_active = models.BooleanField(
+        db_column='IsActive',
+        default=True,
+        help_text=_('Indicates whether the insuree is currently active')
+    )
+    is_deleted = models.BooleanField(
+        db_column='IsDeleted',
+        default=False,
+        help_text=_('Indicates whether the insuree has been soft deleted')
+    )
     card_issued = models.BooleanField(db_column='CardIssued', blank=True, null=True)
     relationship = models.ForeignKey(
         Relation, models.DO_NOTHING, db_column='Relationship', blank=True, null=True,

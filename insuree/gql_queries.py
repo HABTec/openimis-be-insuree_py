@@ -156,6 +156,7 @@ class InsureeGQLType(DjangoObjectType):
             "gender__code": ["exact", "isnull"],
             "marital": ["exact", "isnull"],
             "status": ["exact"],
+            "status_date": ["exact", "lt", "lte", "gt", "gte", "isnull"],
             "validity_from": ["exact", "lt", "lte", "gt", "gte", "isnull"],
             "validity_to": ["exact", "lt", "lte", "gt", "gte", "isnull"],
             **prefix_filterset("photo__", PhotoGQLType._meta.filter_fields),
