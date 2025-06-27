@@ -31,6 +31,7 @@ class InsureeBase:
     uuid = graphene.String(required=False)
     chf_id = graphene.String(max_length=50, required=False)
     last_name = graphene.String(max_length=100, required=True)
+    middle_name = graphene.String(max_length=100, required=False)
     other_names = graphene.String(max_length=100, required=True)
     gender_id = graphene.String(max_length=1, required=True)
     dob = graphene.Date(required=True)
