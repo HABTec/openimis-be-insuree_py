@@ -11,7 +11,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.utils.translation import gettext as _
 from graphene import InputObjectType
-from .models import Family, Insuree, FamilyMutation, InsureeMutation
+from .models import Family, Insuree, FamilyMutation, InsureeMutation, DisabilityStatus
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ class InsureeBase:
     uuid = graphene.String(required=False)
     chf_id = graphene.String(max_length=50, required=False)
     last_name = graphene.String(max_length=100, required=True)
+    middle_name = graphene.String(max_length=100, required=False)
     other_names = graphene.String(max_length=100, required=True)
     gender_id = graphene.String(max_length=1, required=True)
     dob = graphene.Date(required=True)
@@ -45,6 +46,10 @@ class InsureeBase:
     photo_id = graphene.Int(required=False)
     photo_date = graphene.Date(required=False)
     photo = graphene.Field(PhotoInputType, required=False)
+    disability_status = graphene.String(
+        description="Disability status of the insuree",
+        required=False
+    )
     card_issued = graphene.Boolean(required=False)
     family_id = graphene.Int(required=False)
     relationship_id = graphene.Int(required=False)
