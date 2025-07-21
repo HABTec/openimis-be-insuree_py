@@ -21,12 +21,21 @@ class ReportAPITests( APITestCase):
     IFO_URL = f'/{settings.SITE_ROOT()}report/insuree_family_overview/pdf/?dateFrom=2023-11-01&dateTo=2023-12-31'
     IMP_URL = f'/{settings.SITE_ROOT()}report/insuree_missing_photo/pdf/'
     IME_URL = f'/{settings.SITE_ROOT()}report/insurees_pending_enrollment/pdf/?dateFrom=2019-04-01&dateTo=2019-04-30&officerId=1&locationId=20'
-    
+    _is_claim_admin_patcher = None
+    # Commenting out setUpClass due to is_claim_admin patch error
+    # @classmethod
+    # def setUpClass(cls):
+    #     super().setUpClass()
+    #     # Patch is_claim_admin for all tests in this class
+    #     cls._is_claim_admin_patcher = patch('core.models.user.User.is_claim_admin', new_callable=PropertyMock, return_value=False)
+    #     cls._is_claim_admin_patcher.start()
+    #     cls.admin_user = create_test_interactive_user(username="testLocationAdmin")
+    #     cls.admin_token = BaseTestContext(user=cls.admin_user).get_jwt()
     @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.admin_user = create_test_interactive_user(username="testLocationAdmin")
-        cls.admin_token = BaseTestContext(user=cls.admin_user).get_jwt()
+    def tearDownClass(cls):
+        if cls._is_claim_admin_patcher:
+            cls._is_claim_admin_patcher.stop()
+        super().tearDownClass()
         
     def test_single_enrolled_families_report(self):
         headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"}

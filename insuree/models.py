@@ -10,6 +10,8 @@ from graphql import ResolveInfo
 from insuree.apps import InsureeConfig
 from location import models as location_models
 from location.models import LocationManager
+from product.models import MembershipType
+from core import datetime
 
 
 class Gender(models.Model):
@@ -253,19 +255,23 @@ class Insuree(core_models.VersionedModel, core_models.ExtendableModel):
     dob = core_fields.DateField(db_column='DOB', blank=True, null=True)
 
     def age(self, reference_date=None):
-        if self.dob:
-            today = core.datetime.date.today() if reference_date is None else reference_date
-            before_birthday = (today.month, today.day) < (
-                self.dob.month, self.dob.day)
-            return today.year - self.dob.year - before_birthday
-        else:
+        if not self.dob:
             return None
+        if reference_date is None:
+            try:
+                today = datetime.date.today()
+            except Exception:
+                return None
+        else:
+            today = reference_date
+        before_birthday = (today.month, today.day) < (self.dob.month, self.dob.day)
+        return today.year - self.dob.year - before_birthday
 
     def is_adult(self, reference_date=None):
-        if self.dob:
-            return self.age(reference_date) >= core.age_of_majority
-        else:
+        age = self.age(reference_date)
+        if age is None:
             return None
+        return age >= getattr(settings, 'AGE_OF_MAJORITY', 18)
 
     head = models.BooleanField(db_column='IsHead', default=False)
     marital = models.CharField(db_column='Marital', max_length=1, blank=True, null=True)
@@ -375,6 +381,10 @@ class InsureePolicy(core_models.VersionedModel):
     start_date = core_fields.DateField(db_column='StartDate', blank=True, null=True)
     effective_date = core_fields.DateField(db_column='EffectiveDate', blank=True, null=True)
     expiry_date = core_fields.DateField(db_column='ExpiryDate', blank=True, null=True)
+
+    membership_type = models.ForeignKey(
+        MembershipType, models.DO_NOTHING, db_column='MembershipTypeId', blank=True, null=True
+    )
 
     offline = models.BooleanField(db_column='isOffline', blank=True, null=True)
     audit_user_id = models.IntegerField(db_column='AuditUserID')

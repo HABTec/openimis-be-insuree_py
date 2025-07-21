@@ -297,17 +297,13 @@ def validate_worker_data(insuree):
 
 
 def validate_insuree(insuree):
-    """
-    This function checks if the CHF ID is valid for the insuree or worker and
-    then performs additional validation based on the type of insuree.
-
-    Note:
-        - If InsureeConfig.insuree_as_worker is True, the function performs worker data validation.
-        - If InsureeConfig.insuree_as_worker is False, the function performs insuree data validation.
-    """
-    errors = validate_insuree_number(insuree.chf_id, insuree.uuid)
-    if errors:
-        raise ValidationError("invalid_insuree_number")
+    # Accept new insurance number format: region_code/auto_id/member_no/year/admin_id
+    import re
+    chf_id = insuree.chf_id
+    # Example: ኮቀ/0001/1/09/125
+    pattern = r"^[\w\u1200-\u137F]{2,}/\d{4,}/\d+/\d{2}/\d+$"
+    if not chf_id or not re.match(pattern, chf_id):
+        raise ValidationError("invalid_insuree_number: chf_id must be in the format region_code/auto_id/member_no/year/admin_id, e.g., ኮቀ/0001/1/09/125")
 
     if InsureeConfig.insuree_as_worker:
         validate_worker_data(insuree)
@@ -321,6 +317,8 @@ class InsureeService:
 
     @register_service_signal('insuree_service.create_or_update')
     def create_or_update(self, data, create_only=False):
+        # Always ignore any chf_id provided by the frontend; generate it on the backend
+        data.pop('chf_id', None)
         photo_data = data.pop('photo', None)
         from core import datetime
         now = datetime.datetime.now()
@@ -346,10 +344,48 @@ class InsureeService:
                 self.disable_policies_of_insuree(insuree=insuree, status_date=data['status_date'])
         if InsureeConfig.insuree_fsp_mandatory and 'health_facility_id' not in data:
             raise ValidationError("mutation.insuree.fsp_required")
+
+        # --- Insurance number generation logic ---
+        generate_chf_id = False
+        if not insuree and not data.get('chf_id'):
+            generate_chf_id = True
+        # --- End insurance number generation logic ---
+
         if not insuree:
             insuree = Insuree(**data)
         else:
             self._update(insuree, data)
+
+        # Save to get the auto-incremented id
+        insuree.save()
+
+        # Now generate chf_id if needed
+        if generate_chf_id and not insuree.chf_id:
+            # Get region code
+            region_code = 'XX'
+            member_no = 1
+            family = insuree.family
+            if family and family.location:
+                loc = family.location
+                for _ in range(3):
+                    if hasattr(loc, 'parent') and loc.parent:
+                        loc = loc.parent
+                    else:
+                        break
+                if hasattr(loc, 'name') and loc.name:
+                    region_code = loc.name[:2]
+            # Use the actual insuree.id
+            next_id = insuree.id
+            # Get member number in family
+            if family:
+                members = list(family.members.filter(validity_to__isnull=True).order_by('id'))
+                member_no = len(members)
+            # Get year
+            year = now.year % 100
+            # Get admin id
+            admin_id = self.user.id_for_audit
+            insuree.chf_id = f"{region_code}/{next_id:04d}/{member_no}/{year:02d}/{admin_id}"
+            insuree.save()
 
         return self._create_or_update(
             insuree, photo_data,
