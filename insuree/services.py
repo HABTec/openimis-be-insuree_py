@@ -301,7 +301,12 @@ def validate_insuree(insuree):
     import re
     chf_id = insuree.chf_id
     # Example: ኮቀ/0001/1/09/125
-    pattern = r"^[\w\u1200-\u137F]{2,}/\d{4,}/\d+/\d{2}/\d+$"
+    # Accept three flexible formats:
+    # 1. region/district/auto_id/family_no/admin
+    # 2. district/auto_id/family_no/admin
+    # 3. auto_id/family_no/admin
+    # Accept the three flexible formats ending with 4-digit year
+    pattern = r"^((?:[\w\u1200-\u137F]{2,}/){2}\d{4,}/\d+/\d+/\d{4}|\d{4,}/[\w\u1200-\u137F]{2,}/\d+/\d+/\d{4}|\d{4,}/\d+/\d+/\d{4})$"
     if not chf_id or not re.match(pattern, chf_id):
         raise ValidationError("invalid_insuree_number: chf_id must be in the format region_code/auto_id/member_no/year/admin_id, e.g., ኮቀ/0001/1/09/125")
 
@@ -317,8 +322,11 @@ class InsureeService:
 
     @register_service_signal('insuree_service.create_or_update')
     def create_or_update(self, data, create_only=False):
-        # Always ignore any chf_id provided by the frontend; generate it on the backend
-        data.pop('chf_id', None)
+        # Handle script mode: when is_script==True and a chf_id is supplied, we keep it as-is
+        is_script = data.pop('is_script', False)
+        if not is_script:
+            # Ignore any chf_id provided by the frontend for normal requests
+            data.pop('chf_id', None)
         photo_data = data.pop('photo', None)
         from core import datetime
         now = datetime.datetime.now()
@@ -346,8 +354,12 @@ class InsureeService:
             raise ValidationError("mutation.insuree.fsp_required")
 
         # --- Insurance number generation logic ---
+        chf_id_format = int(data.pop('chf_id_format', 1))  # 1=region+district+auto, 2=district+auto, 3=auto only
+        if chf_id_format not in [1, 2, 3]:
+            raise ValidationError(_("invalid_chf_id_format"))
         generate_chf_id = False
-        if not insuree and not data.get('chf_id'):
+        if not insuree and (not data.get('chf_id') or not is_script):
+            # Need to generate when no insuree yet and either no chf_id supplied OR supplied but not script mode
             generate_chf_id = True
         # --- End insurance number generation logic ---
 
@@ -361,30 +373,55 @@ class InsureeService:
 
         # Now generate chf_id if needed
         if generate_chf_id and not insuree.chf_id:
-            # Get region code
-            region_code = 'XX'
+            # Determine components for chf_id based on requested format
+            region_code = None
+            district_code = None
             member_no = 1
             family = insuree.family
+            def _abbr(loc_name: str):
+                if not loc_name:
+                    return None
+                words = loc_name.strip().split()
+                if len(words) == 1:
+                    w = words[0]
+                    if len(w) == 3:
+                        return w[:3].upper()
+                    if len(w) > 3:
+                        return w[:2].upper()
+                    return w.upper()
+                # multiple words -> first char of each word
+                return ''.join(word[0] for word in words).upper()
+
             if family and family.location:
+                district_code = _abbr(family.location.name)
+                # Find top-most ancestor for region
                 loc = family.location
-                for _ in range(3):
-                    if hasattr(loc, 'parent') and loc.parent:
-                        loc = loc.parent
-                    else:
-                        break
-                if hasattr(loc, 'name') and loc.name:
-                    region_code = loc.name[:2]
+                while hasattr(loc, 'parent') and loc.parent:
+                    loc = loc.parent
+                region_code = _abbr(loc.name) if loc else None
             # Use the actual insuree.id
             next_id = insuree.id
-            # Get member number in family
+            # Refresh family reference (it might have been None before save)
+            family = insuree.family
+            # Determine family member order (member_no) based on current DB count
             if family:
-                members = list(family.members.filter(validity_to__isnull=True).order_by('id'))
-                member_no = len(members)
-            # Get year
-            year = now.year % 100
+                member_no = Insuree.objects.filter(family_id=family.id, validity_to__isnull=True).count()
             # Get admin id
             admin_id = self.user.id_for_audit
-            insuree.chf_id = f"{region_code}/{next_id:04d}/{member_no}/{year:02d}/{admin_id}"
+            # Current year (4-digits)
+            year_full = now.year
+
+            # Build chf_id depending on format
+            if chf_id_format == 1:
+                if not region_code or not district_code:
+                    raise ValidationError(_("cannot_generate_chf_id_missing_location"))
+                insuree.chf_id = f"{region_code}/{district_code}/{next_id:04d}/{member_no}/{admin_id}/{year_full}"
+            elif chf_id_format == 2:
+                if not district_code:
+                    raise ValidationError(_("cannot_generate_chf_id_missing_location"))
+                insuree.chf_id = f"{next_id:04d}/{district_code}/{member_no}/{admin_id}/{year_full}"
+            else:  # format 3
+                insuree.chf_id = f"{next_id:04d}/{member_no}/{admin_id}/{year_full}"
             insuree.save()
 
         return self._create_or_update(
