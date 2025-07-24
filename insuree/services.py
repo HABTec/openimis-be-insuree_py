@@ -322,11 +322,7 @@ class InsureeService:
 
     @register_service_signal('insuree_service.create_or_update')
     def create_or_update(self, data, create_only=False):
-        # Handle script mode: when is_script==True and a chf_id is supplied, we keep it as-is
-        is_script = data.pop('is_script', False)
-        if not is_script:
-            # Ignore any chf_id provided by the frontend for normal requests
-            data.pop('chf_id', None)
+
         photo_data = data.pop('photo', None)
         from core import datetime
         now = datetime.datetime.now()
@@ -358,8 +354,8 @@ class InsureeService:
         if chf_id_format not in [1, 2, 3]:
             raise ValidationError(_("invalid_chf_id_format"))
         generate_chf_id = False
-        if not insuree and (not data.get('chf_id') or not is_script):
-            # Need to generate when no insuree yet and either no chf_id supplied OR supplied but not script mode
+        if not insuree and not data.get('chf_id'):
+            # Need to generate when no insuree yet and no chf_id supplied
             generate_chf_id = True
         # --- End insurance number generation logic ---
 
