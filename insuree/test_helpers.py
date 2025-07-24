@@ -37,7 +37,7 @@ def create_test_insuree(with_family=True, is_head=False, custom_props=None, fami
     if not insuree:
         # Generate a valid chf_id if not provided
         if 'chf_id' not in custom_props:
-            region_code = 'ኮቀ'
+            region_code = DEFAULT_REGION_CODE
             auto_id = '0001'
             member_no = '1'
             year = '09'
