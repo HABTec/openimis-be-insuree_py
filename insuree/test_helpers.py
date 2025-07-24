@@ -35,13 +35,18 @@ def create_test_insuree(with_family=True, is_head=False, custom_props=None, fami
     if not insuree and 'uuid' in custom_props:
         insuree = Insuree.objects.filter(uuid=custom_props['uuid'], *filter_validity()).first()
     if not insuree:
-        if 'chf_id' in custom_props:
-            ref = custom_props.pop('chf_id')
-        else:
-            ref = generate_random_insuree_number()
-        while validate_insuree_number(ref) != []:
-            ref = generate_random_insuree_number()
-        insuree = Insuree.objects.filter(chf_id=ref, validity_to__isnull=True).first()
+        # Generate a valid chf_id if not provided
+        if 'chf_id' not in custom_props:
+            region_code = DEFAULT_REGION_CODE
+            auto_id = '0001'
+            member_no = '1'
+            year = '09'
+            admin_id = f"{random.randint(100, 999):03d}"
+            custom_props['chf_id'] = f"{region_code}/{auto_id}/{member_no}/{year}/{admin_id}"
+        while validate_insuree_number(custom_props['chf_id']) != []:
+            admin_id = f"{random.randint(100, 999):03d}"
+            custom_props['chf_id'] = f"{region_code}/{auto_id}/{member_no}/{year}/{admin_id}"
+        insuree = Insuree.objects.filter(chf_id=custom_props['chf_id'], validity_to__isnull=True).first()
     if insuree is None:
         #managing location
         family_location = None
@@ -76,7 +81,7 @@ def create_test_insuree(with_family=True, is_head=False, custom_props=None, fami
                 'family': family,
                 'gender': get_from_custom_props(custom_props, 'gender', Gender.objects.get(code='M')),
                 'dob': get_from_custom_props(custom_props, 'dob', '1972-08-09'),
-                'chf_id': ref,
+                'chf_id': custom_props['chf_id'],
                 'head': is_head,
                 'card_issued': get_from_custom_props(custom_props, 'card_issued', True),
                 'validity_from': get_from_custom_props(custom_props, 'validity_from',"2019-01-01"),

@@ -62,6 +62,7 @@ class InsureeBase:
     status = graphene.String(required=False)
     status_reason = graphene.String(required=False)
     status_date = graphene.Date(required=False)
+    chf_id_format = graphene.Int(required=False, description="1=region/district, 2=district, 3=none")
     add_on_existing_policy = graphene.Boolean(required=False)
 
 
