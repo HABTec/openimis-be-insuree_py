@@ -64,6 +64,7 @@ class InsureeBase:
     status_date = graphene.Date(required=False)
     chf_id_format = graphene.Int(required=False, description="1=region/district, 2=district, 3=none")
     add_on_existing_policy = graphene.Boolean(required=False)
+    is_active = graphene.Boolean(required=False, description="Whether the insuree is active")
 
 
 class CreateInsureeInputType(InsureeBase, OpenIMISMutation.Input):
@@ -243,7 +244,32 @@ class CreateInsureeMutation(OpenIMISMutation):
             from core.utils import TimeUtils
             data['validity_from'] = TimeUtils.now()
             client_mutation_id = data.get("client_mutation_id")
+            
+            # Remember if isActive was set to false
+            is_active_was_false = data.get('is_active') is False
+            
+            # Create the insuree
             insuree = update_or_create_insuree(data, user)
+            
+            # If isActive was false, directly update the insuree status in the database
+            if is_active_was_false:
+                from insuree.models import Insuree, InsureeStatus
+                import logging
+                logger = logging.getLogger(__name__)
+                
+                try:
+                    logger.info(f"Mutation handler: Setting insuree {insuree.id} to inactive status")
+                    # Update both status and is_active fields directly in the database
+                    Insuree.objects.filter(id=insuree.id).update(
+                        status=InsureeStatus.INACTIVE,
+                        is_active=False
+                    )
+                    # Refresh the insuree from the database
+                    insuree.refresh_from_db()
+                    logger.info(f"Mutation handler: Insuree status after update: {insuree.status}, is_active: {insuree.is_active}")
+                except Exception as e:
+                    logger.error(f"Mutation handler: Failed to set insuree {insuree.id} to inactive status: {e}")
+            
             InsureeMutation.object_mutated(
                 user, client_mutation_id=client_mutation_id, insuree=insuree)
             return None

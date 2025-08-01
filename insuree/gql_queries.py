@@ -108,6 +108,17 @@ class InsureeGQLType(DjangoObjectType):
     age = graphene.Int(source='age')
     client_mutation_id = graphene.String()
     photo = PhotoGQLType()
+    is_active = graphene.Boolean(description="Whether the insuree is active")
+    
+    def resolve_is_active(self, info):
+        if not info.context.user.has_perms(InsureeConfig.gql_query_insuree_perms):
+            raise PermissionDenied(_("unauthorized"))
+        # Add debug logging to see what's happening
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Resolving isActive for insuree {self.id}, status: {self.status}, is_active field: {self.is_active}")
+        # Return False if status is not ACTIVE, regardless of is_active field
+        return self.status == 'AC'
 
     def resolve_current_village(self, info):
         if not info.context.user.has_perms(InsureeConfig.gql_query_insuree_perms):
