@@ -356,11 +356,10 @@ class InsureeService:
         if chf_id_format not in [1, 2, 3]:
             raise ValidationError(_("invalid_chf_id_format"))
             
-        # Find existing insuree if updating
+        # Find existing insuree if updating (uuid indicates update intent)
         insuree = None
         uuid_in_payload = "uuid" in data and data.get("uuid")
         original_uuid = data.get("uuid") if uuid_in_payload else None
-        chf_in_payload = 'chf_id' in data and data.get('chf_id')
         if uuid_in_payload:
             # When updating by UUID, ensure we only consider currently valid records
             try:
@@ -371,15 +370,9 @@ class InsureeService:
             except Exception as e:
                 logger.warning(f"UUID lookup failed for {data.get('uuid')}: {e}")
                 insuree = None
-            # Fallback 2: CHFID when UUID lookup failed but CHFID provided
-            if not insuree and chf_in_payload and not create_only:
-                logger.info("UUID lookup returned none, falling back to CHFID lookup for update")
-                insuree = Insuree.objects.filter(chf_id=data["chf_id"], *filter_validity()).first()
-        elif chf_in_payload and not create_only:
-            insuree = Insuree.objects.filter(chf_id=data["chf_id"], *filter_validity()).first()
         
-        # If this is meant to be an update but no insuree was found, error out clearly
-        if not create_only and (uuid_in_payload or chf_in_payload) and insuree is None:
+        # If this is meant to be an update (uuid provided) but no insuree was found, error out clearly
+        if not create_only and uuid_in_payload and insuree is None:
             logger.error(f"Update requested but insuree not found. uuid={data.get('uuid')}, chf_id={data.get('chf_id')}")
             raise ValidationError(_("insuree.not_found"))
             
@@ -436,9 +429,16 @@ class InsureeService:
         if InsureeConfig.insuree_fsp_mandatory and 'health_facility_id' not in data:
             raise ValidationError("mutation.insuree.fsp_required")
 
-        # Determine if we need to generate a CHF ID
-        generate_chf_id = not insuree and not data.get('chf_id')
-        
+        # Treat any provided chf_id as legacy (from manual system) and always generate a fresh chf_id
+        provided_chf = data.get('chf_id')
+        if provided_chf:
+            # Store in dedicated column for reporting/filtering
+            data['legacy_chf_id'] = provided_chf
+        try:
+            data['chf_id'] = self.generate_unique_chf_id(data, chf_id_format)
+        except Exception as e:
+            logger.error("Failed to generate CHFID, leaving provided value as-is. Error: %s", e)
+
         # Disable policies if needed
         if insuree:
             self.disable_policies_of_insuree(insuree=insuree, status_date=data.get('status_date', now.date()))
@@ -454,67 +454,6 @@ class InsureeService:
                 self._update(insuree, data)
         insuree.save()
         insuree.refresh_from_db()
-
-        # Generate CHF ID if needed
-        if generate_chf_id:
-            # Prepare components for CHF ID
-            region_code = None
-            district_code = None
-            member_no = 1
-            family = insuree.family
-
-            # Helper function to abbreviate location names
-            def _abbr(loc_name: str):
-                if not loc_name:
-                    return None
-                words = loc_name.strip().split()
-                if len(words) == 1:
-                    w = words[0]
-                    if len(w) == 3:
-                        return w[:3].upper()
-                    if len(w) > 3:
-                        return w[:2].upper()
-                    return w.upper()
-                # multiple words -> first char of each word
-                return ''.join(word[0] for word in words).upper()
-
-            # Get location codes if family has location
-            if family and family.location:
-                district_code = _abbr(family.location.name)
-                # Find top-most ancestor for region
-                loc = family.location
-                while hasattr(loc, 'parent') and loc.parent:
-                    loc = loc.parent
-                region_code = _abbr(loc.name) if loc else None
-
-            # Check if we need to fall back to format 3 due to missing location info
-            original_format = chf_id_format
-            if chf_id_format == 1 and (not region_code or not district_code):
-                chf_id_format = 3  # Fall back to format 3
-            elif chf_id_format == 2 and not district_code:
-                chf_id_format = 3  # Fall back to format 3
-
-            # Log the format change if it happened
-            if original_format != chf_id_format:
-                logger.info(f"Falling back to CHF ID format 3 due to missing location information for insuree {insuree.id}")
-
-            # Get components for CHF ID
-            next_id = insuree.id
-            if family:
-                member_no = Insuree.objects.filter(family_id=family.id, validity_to__isnull=True).count()
-            admin_id = audit_id
-            year_full = now.year
-
-            # Build CHF ID based on format
-            if chf_id_format == 1:
-                insuree.chf_id = f"{region_code}/{district_code}/{next_id:04d}/{member_no}/{admin_id}/{year_full}"
-            elif chf_id_format == 2:
-                insuree.chf_id = f"{next_id:04d}/{district_code}/{member_no}/{admin_id}/{year_full}"
-            else:  # format 3
-                insuree.chf_id = f"{next_id:04d}/{member_no}/{admin_id}/{year_full}"
-
-            # Save the insuree with the generated CHF ID
-            insuree.save()
 
         # Handle photo if provided
         if photo_data:
@@ -566,6 +505,81 @@ class InsureeService:
             self.activate_policies_of_insuree(insuree=insuree)
             
         return insuree
+
+    def generate_unique_chf_id(self, data: dict, chf_id_format: int = 1) -> str:
+        """Generate a CHFID matching accepted patterns and ensure uniqueness.
+        chf_id_format:
+          1 = region/district/auto/member/admin/year
+          2 = district/auto/member/admin/year
+          3 = auto/member/admin/year
+        Fallbacks (RG/DS) are used if no location context is available.
+        """
+        from core import datetime
+        # Try to infer region/district from provided family/location references
+        region = 'RG'
+        district = 'DS'
+        try:
+            # When creating, data may include family or current_village; try family first
+            fam = data.get('family') or data.get('family_id')
+            village = data.get('current_village') or data.get('current_village_id')
+            location_obj = None
+            if fam and isinstance(fam, Family):
+                location_obj = getattr(fam, 'location', None)
+            # Fallback to insuree.current_village's district
+            if not location_obj and village and hasattr(village, 'parent'):
+                # village.parent -> ward, village.parent.parent -> district
+                location_obj = getattr(village, 'parent', None)
+                if location_obj:
+                    location_obj = getattr(location_obj, 'parent', None)
+            # Derive abbreviations
+            if location_obj and hasattr(location_obj, 'parent') and getattr(location_obj, 'parent', None):
+                # location_obj is district; region is parent
+                region = _abbr(getattr(location_obj.parent, 'name', None)) or region
+                district = _abbr(getattr(location_obj, 'name', None)) or district
+        except Exception as e:
+            logger.debug("CHFID location derivation failed: %s", e)
+
+        # Member number: 1 for head if provided in data, else 1
+        member_no = 1
+        try:
+            if 'head' in data and data.get('head') is True:
+                member_no = 1
+            elif 'relationship' in data and getattr(data.get('relationship'), 'id', None):
+                # if relationship is available, assign 2 as a generic non-head index
+                member_no = 2
+        except Exception:
+            pass
+
+        admin_id = 0
+        try:
+            admin_id = getattr(self.user, 'id_for_audit', 0) or 0
+        except Exception:
+            admin_id = 0
+
+        year = datetime.datetime.now().year
+
+        # Build candidate according to format
+        def build_candidate(seq: str) -> str:
+            return seq
+
+        # auto: 6-digit random-like increasing suffix to reduce collision risk
+        import random
+        for _ in range(20):  # try up to 20 times to avoid rare collisions
+            auto_id = f"{random.randint(100000, 999999)}"
+            if chf_id_format == 1:
+                candidate = f"{region}/{district}/{auto_id}/{member_no}/{admin_id}/{year}"
+            elif chf_id_format == 2:
+                candidate = f"{district}/{auto_id}/{member_no}/{admin_id}/{year}"
+            else:
+                candidate = f"{auto_id}/{member_no}/{admin_id}/{year}"
+
+            # Ensure uniqueness against current valid insurees
+            if not Insuree.objects.filter(chf_id=candidate, validity_to__isnull=True).exists():
+                return candidate
+
+        # As a last resort, append a UUID fragment
+        fallback = f"{region}/{district}/{uuid.uuid4().hex[:6]}/{member_no}/{admin_id}/{year}"
+        return fallback
 
     def disable_policies_of_insuree(self, insuree, status_date):
         """Placeholder: disable policies logic.
