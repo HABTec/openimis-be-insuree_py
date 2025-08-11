@@ -18,7 +18,8 @@ from django.core.exceptions import ValidationError
 from core.models import filter_validity, resolved_id_reference
 
 logger = logging.getLogger(__name__)
-
+from django.conf import settings
+COLLISION_RETRY_ATTEMPTS = getattr(settings, 'INSUREE_COLLISION_RETRY_ATTEMPTS', 20)
 
 def create_insuree_renewal_detail(policy_renewal):
     from core import datetime, datetimedelta
@@ -518,6 +519,7 @@ class InsureeService:
         # Try to infer region/district from provided family/location references
         region = 'RG'
         district = 'DS'
+        location_found = False
         try:
             # When creating, data may include family or current_village; try family first
             fam = data.get('family') or data.get('family_id')
@@ -536,8 +538,13 @@ class InsureeService:
                 # location_obj is district; region is parent
                 region = _abbr(getattr(location_obj.parent, 'name', None)) or region
                 district = _abbr(getattr(location_obj, 'name', None)) or district
+                location_found = True
         except Exception as e:
             logger.debug("CHFID location derivation failed: %s", e)
+
+        # If we couldn't determine both region and district, force format 3 (auto/member/admin/year)
+        if not location_found and chf_id_format in (1, 2):
+            chf_id_format = 3
 
         # Member number: 1 for head if provided in data, else 1
         member_no = 1
