@@ -577,7 +577,13 @@ class InsureeService:
                 return candidate
 
         # As a last resort, append a UUID fragment
-        fallback = f"{region}/{district}/{uuid.uuid4().hex[:6]}/{member_no}/{admin_id}/{year}"
+        uuid_fragment = uuid.uuid4().hex[:6]
+        if chf_id_format == 1:
+            fallback = f"{region}/{district}/{uuid_fragment}/{member_no}/{admin_id}/{year}"
+        elif chf_id_format == 2:
+            fallback = f"{district}/{uuid_fragment}/{member_no}/{admin_id}/{year}"
+        else:
+            fallback = f"{uuid_fragment}/{member_no}/{admin_id}/{year}"
         return fallback
 
     def disable_policies_of_insuree(self, insuree, status_date):
