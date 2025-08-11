@@ -246,6 +246,7 @@ class Insuree(core_models.VersionedModel, core_models.ExtendableModel):
     family = models.ForeignKey(Family, models.DO_NOTHING, blank=True, null=True,
                                db_column='FamilyID', related_name="members")
     chf_id = models.CharField(db_column='CHFID', max_length=50, blank=True, null=True)
+    legacy_chf_id = models.CharField(db_column='LegacyCHFID', max_length=50, blank=True, null=True, db_index=True)
     last_name = models.CharField(db_column='LastName', max_length=100)
     middle_name = models.CharField(db_column='MiddleName', max_length=100, blank=True, null=True)
     other_names = models.CharField(db_column='OtherNames', max_length=100)

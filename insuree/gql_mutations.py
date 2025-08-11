@@ -5,6 +5,7 @@ import base64
 import graphene
 from insuree.apps import InsureeConfig
 from insuree.services import validate_insuree_number, InsureeService, FamilyService, InsureePolicyService
+from django.conf import settings
 
 from core.schema import OpenIMISMutation
 from django.contrib.auth.models import AnonymousUser
@@ -72,7 +73,7 @@ class CreateInsureeInputType(InsureeBase, OpenIMISMutation.Input):
 
 
 class UpdateInsureeInputType(InsureeBase, OpenIMISMutation.Input):
-    pass
+    no_versioning = graphene.Boolean(required=False, description="Update current row in place without creating history")
 
 
 class FamilyHeadInsureeInputType(InsureeBase, InputObjectType):
@@ -174,7 +175,11 @@ class UpdateFamilyMutation(OpenIMISMutation):
                     _("mutation.authentication_required"))
             if not user.has_perms(InsureeConfig.gql_mutation_update_families_perms):
                 raise PermissionDenied(_("unauthorized"))
-            data['audit_user_id'] = user.id_for_audit
+            # In DEBUG with anonymous, avoid accessing id_for_audit
+            if user.is_anonymous and getattr(settings, 'DEBUG', False):
+                data['audit_user_id'] = 0
+            else:
+                data['audit_user_id'] = user.id_for_audit
             client_mutation_id = data.get("client_mutation_id")
             family = update_or_create_family(data, user)
             FamilyMutation.object_mutated(
@@ -236,11 +241,18 @@ class CreateInsureeMutation(OpenIMISMutation):
     def async_mutate(cls, user, **data):
         try:
             if type(user) is AnonymousUser or not user.id:
-                raise ValidationError(
-                    _("mutation.authentication_required"))
-            if not user.has_perms(InsureeConfig.gql_mutation_create_insurees_perms):
+                # Allow local testing when DEBUG=True, otherwise enforce auth
+                if not getattr(settings, 'DEBUG', False):
+                    raise ValidationError(_("mutation.authentication_required"))
+                logger.warning("DEBUG: bypassing authentication for CreateInsureeMutation")
+            # Only enforce permission checks for authenticated users
+            if not user.is_anonymous and not user.has_perms(InsureeConfig.gql_mutation_create_insurees_perms):
                 raise PermissionDenied(_("unauthorized"))
-            data['audit_user_id'] = user.id_for_audit
+            # In DEBUG with anonymous, avoid accessing id_for_audit
+            if user.is_anonymous and getattr(settings, 'DEBUG', False):
+                data['audit_user_id'] = 0
+            else:
+                data['audit_user_id'] = user.id_for_audit
             from core.utils import TimeUtils
             data['validity_from'] = TimeUtils.now()
             client_mutation_id = data.get("client_mutation_id")
@@ -254,9 +266,6 @@ class CreateInsureeMutation(OpenIMISMutation):
             # If isActive was false, directly update the insuree status in the database
             if is_active_was_false:
                 from insuree.models import Insuree, InsureeStatus
-                import logging
-                logger = logging.getLogger(__name__)
-                
                 try:
                     logger.info(f"Mutation handler: Setting insuree {insuree.id} to inactive status")
                     # Update both status and is_active fields directly in the database
@@ -270,8 +279,10 @@ class CreateInsureeMutation(OpenIMISMutation):
                 except Exception as e:
                     logger.error(f"Mutation handler: Failed to set insuree {insuree.id} to inactive status: {e}")
             
+            # Avoid passing AnonymousUser to mutation logger (can cause UUID error)
+            mutation_user = None if (user.is_anonymous and getattr(settings, 'DEBUG', False)) else user
             InsureeMutation.object_mutated(
-                user, client_mutation_id=client_mutation_id, insuree=insuree)
+                mutation_user, client_mutation_id=client_mutation_id, insuree=insuree)
             return None
         except Exception as exc:
             logger.exception("insuree.mutation.failed_to_create_insuree")
@@ -288,25 +299,36 @@ class UpdateInsureeMutation(OpenIMISMutation):
     _mutation_module = "insuree"
     _mutation_class = "UpdateInsureeMutation"
 
-    class Input(CreateInsureeInputType):
+    class Input(UpdateInsureeInputType):
         pass
 
     @classmethod
     def async_mutate(cls, user, **data):
         try:
             if type(user) is AnonymousUser or not user.id:
-                raise ValidationError(
-                    _("mutation.authentication_required"))
-            if not user.has_perms(InsureeConfig.gql_mutation_create_insurees_perms):
+                # Allow local testing when DEBUG=True, otherwise enforce auth
+                if not getattr(settings, 'DEBUG', False):
+                    raise ValidationError(_("mutation.authentication_required"))
+                logger.warning("DEBUG: bypassing authentication for UpdateInsureeMutation")
+            # Use update permission for update mutation
+            if not user.is_anonymous and not user.has_perms(InsureeConfig.gql_mutation_update_insurees_perms):
                 raise PermissionDenied(_("unauthorized"))
             if 'uuid' not in data:
                 raise ValidationError(
                     "There is no uuid in updateMutation input!")
-            data['audit_user_id'] = user.id_for_audit
+            # In DEBUG with anonymous, avoid accessing id_for_audit
+            if user.is_anonymous and getattr(settings, 'DEBUG', False):
+                data['audit_user_id'] = 0
+            else:
+                data['audit_user_id'] = user.id_for_audit
+            # Default to in-place updates unless explicitly overridden
+            data.setdefault('no_versioning', True)
             client_mutation_id = data.get("client_mutation_id")
             insuree = update_or_create_insuree(data, user)
+            # Avoid passing AnonymousUser to mutation logger (causes UUID error)
+            mutation_user = None if (user.is_anonymous and getattr(settings, 'DEBUG', False)) else user
             InsureeMutation.object_mutated(
-                user, client_mutation_id=client_mutation_id, insuree=insuree)
+                mutation_user, client_mutation_id=client_mutation_id, insuree=insuree)
             return None
         except Exception as exc:
             logger.exception("insuree.mutation.failed_to_update_insuree")
