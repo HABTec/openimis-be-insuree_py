@@ -467,7 +467,7 @@ class InsureeService:
         # We popped is_active earlier to avoid interfering with status validation.
         # Here we apply it directly to the currently valid row.
         try:
-            if 'is_active' in locals() and is_active is not None:
+            if is_active is not None:
                 # Re-fetch the actual current row, as versioning may have created a new UUID
                 current = None
                 if getattr(insuree, 'chf_id', None):
