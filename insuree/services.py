@@ -561,7 +561,6 @@ class InsureeService:
         # Build candidate according to format
         def build_candidate(seq: str) -> str:
             return seq
-
         # auto: 6-digit random-like increasing suffix to reduce collision risk
         import random
         for _ in range(20):  # try up to 20 times to avoid rare collisions
