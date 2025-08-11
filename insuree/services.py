@@ -563,7 +563,7 @@ class InsureeService:
             return seq
         # auto: 6-digit random-like increasing suffix to reduce collision risk
         import random
-        for _ in range(20):  # try up to 20 times to avoid rare collisions
+        for _ in range(COLLISION_RETRY_ATTEMPTS):  # try up to 20 times to avoid rare collisions
             auto_id = f"{random.randint(100000, 999999)}"
             if chf_id_format == 1:
                 candidate = f"{region}/{district}/{auto_id}/{member_no}/{admin_id}/{year}"
