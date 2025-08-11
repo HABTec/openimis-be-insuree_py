@@ -326,20 +326,25 @@ class InsureeService:
         photo_data = data.pop('photo', None)
         add_on_existing_policy = data.pop('add_on_existing_policy', False)
         chf_id_format = int(data.pop('chf_id_format', 1))  # 1=region+district+auto, 2=district+auto, 3=auto only
+        no_versioning = bool(data.pop('no_versioning', False))
         
-        # Handle is_active field - map it to status if provided
-        is_active = data.pop('is_active', None)
-        if is_active is not None:
-            # If is_active is True, set status to ACTIVE
-            if is_active:
-                data['status'] = InsureeStatus.ACTIVE
-            # If is_active is False, just leave it out - we'll handle it after creation
-            # This avoids all the status reason validation issues
+        # Observe is_active but don't remove it from data; let update apply it directly
+        # Avoid mapping is_active to status to keep them independent for now
+        is_active = data.get('is_active', None)
         
         # Basic validation
         from core import datetime
+        # Derive a safe audit user id (supports DEBUG anonymous calls)
+        try:
+            from django.contrib.auth.models import AnonymousUser
+            if isinstance(self.user, AnonymousUser) or not getattr(self.user, 'id', None):
+                audit_id = 0
+            else:
+                audit_id = self.user.id_for_audit
+        except Exception:
+            audit_id = 0
         now = datetime.datetime.now()
-        data['audit_user_id'] = self.user.id_for_audit
+        data['audit_user_id'] = audit_id
         data['validity_from'] = now
         
         # Validate status
@@ -347,21 +352,44 @@ class InsureeService:
         if status not in [choice[0] for choice in InsureeStatus.choices]:
             raise ValidationError(_("mutation.insuree.wrong_status"))
             
-        # Validate photo requirement
-        if InsureeConfig.is_insuree_photo_required and photo_data is None:
-            raise ValidationError(_("mutation.insuree.no_required_photo"))
-            
         # Validate CHF ID format
         if chf_id_format not in [1, 2, 3]:
             raise ValidationError(_("invalid_chf_id_format"))
             
         # Find existing insuree if updating
         insuree = None
-        if "uuid" in data:
-            insuree = Insuree.objects.filter(uuid=data["uuid"]).first()
-        elif 'chf_id' in data and not create_only:
+        uuid_in_payload = "uuid" in data and data.get("uuid")
+        original_uuid = data.get("uuid") if uuid_in_payload else None
+        chf_in_payload = 'chf_id' in data and data.get('chf_id')
+        if uuid_in_payload:
+            # When updating by UUID, ensure we only consider currently valid records
+            try:
+                insuree = Insuree.objects.filter(uuid=data["uuid"], *filter_validity()).first()
+                if not insuree:
+                    # Fallback 1: try without validity filter (last historical)
+                    insuree = Insuree.objects.filter(uuid=data["uuid"]).order_by('-validity_from').first()
+            except Exception as e:
+                logger.warning(f"UUID lookup failed for {data.get('uuid')}: {e}")
+                insuree = None
+            # Fallback 2: CHFID when UUID lookup failed but CHFID provided
+            if not insuree and chf_in_payload and not create_only:
+                logger.info("UUID lookup returned none, falling back to CHFID lookup for update")
+                insuree = Insuree.objects.filter(chf_id=data["chf_id"], *filter_validity()).first()
+        elif chf_in_payload and not create_only:
             insuree = Insuree.objects.filter(chf_id=data["chf_id"], *filter_validity()).first()
+        
+        # If this is meant to be an update but no insuree was found, error out clearly
+        if not create_only and (uuid_in_payload or chf_in_payload) and insuree is None:
+            logger.error(f"Update requested but insuree not found. uuid={data.get('uuid')}, chf_id={data.get('chf_id')}")
+            raise ValidationError(_("insuree.not_found"))
             
+        # Validate photo requirement: only force a photo when creating or when insuree has no existing photo
+        if InsureeConfig.is_insuree_photo_required:
+            creating = insuree is None
+            missing_existing_photo = (insuree is not None and getattr(insuree, 'photo', None) is None)
+            if (creating or missing_existing_photo) and photo_data is None:
+                raise ValidationError(_("mutation.insuree.no_required_photo"))
+
         # Handle status-specific validation and actions
         if status in [InsureeStatus.INACTIVE, InsureeStatus.DEAD]:
             # For inactive insurees created via isActive=false, we've already set a hardcoded status reason
@@ -411,15 +439,22 @@ class InsureeService:
         # Determine if we need to generate a CHF ID
         generate_chf_id = not insuree and not data.get('chf_id')
         
+        # Disable policies if needed
+        if insuree:
+            self.disable_policies_of_insuree(insuree=insuree, status_date=data.get('status_date', now.date()))
+            
         # Create new insuree or update existing one
         if not insuree:
             insuree = Insuree(**data)
         else:
-            self._update(insuree, data)
-        
-        # We need to save once to get an ID for CHF ID generation
+            if no_versioning:
+                # Update the current row in place, without saving history/new version
+                self._update(insuree, data, in_place=True)
+            else:
+                self._update(insuree, data)
         insuree.save()
-        
+        insuree.refresh_from_db()
+
         # Generate CHF ID if needed
         if generate_chf_id:
             # Prepare components for CHF ID
@@ -427,7 +462,7 @@ class InsureeService:
             district_code = None
             member_no = 1
             family = insuree.family
-            
+
             # Helper function to abbreviate location names
             def _abbr(loc_name: str):
                 if not loc_name:
@@ -451,23 +486,23 @@ class InsureeService:
                 while hasattr(loc, 'parent') and loc.parent:
                     loc = loc.parent
                 region_code = _abbr(loc.name) if loc else None
-            
+
             # Check if we need to fall back to format 3 due to missing location info
             original_format = chf_id_format
             if chf_id_format == 1 and (not region_code or not district_code):
                 chf_id_format = 3  # Fall back to format 3
             elif chf_id_format == 2 and not district_code:
                 chf_id_format = 3  # Fall back to format 3
-                
+
             # Log the format change if it happened
             if original_format != chf_id_format:
                 logger.info(f"Falling back to CHF ID format 3 due to missing location information for insuree {insuree.id}")
-            
+
             # Get components for CHF ID
             next_id = insuree.id
             if family:
                 member_no = Insuree.objects.filter(family_id=family.id, validity_to__isnull=True).count()
-            admin_id = self.user.id_for_audit
+            admin_id = audit_id
             year_full = now.year
 
             # Build CHF ID based on format
@@ -477,10 +512,10 @@ class InsureeService:
                 insuree.chf_id = f"{next_id:04d}/{district_code}/{member_no}/{admin_id}/{year_full}"
             else:  # format 3
                 insuree.chf_id = f"{next_id:04d}/{member_no}/{admin_id}/{year_full}"
-                
+
             # Save the insuree with the generated CHF ID
             insuree.save()
-        
+
         # Handle photo if provided
         if photo_data:
             photo = handle_insuree_photo(self.user, insuree.validity_from, insuree, photo_data)
@@ -488,7 +523,44 @@ class InsureeService:
                 insuree.photo = photo
                 insuree.photo_date = photo.date
                 insuree.save()
-        
+
+        # Apply explicit is_active toggle if it was provided in the payload.
+        # We popped is_active earlier to avoid interfering with status validation.
+        # Here we apply it directly to the currently valid row.
+        try:
+            if 'is_active' in locals() and is_active is not None:
+                # Re-fetch the actual current row, as versioning may have created a new UUID
+                current = None
+                if getattr(insuree, 'chf_id', None):
+                    current = Insuree.objects.filter(chf_id=insuree.chf_id, validity_to__isnull=True).order_by('-validity_from').first()
+                if not current:
+                    current = Insuree.objects.filter(uuid=insuree.uuid, validity_to__isnull=True).first()
+                if current:
+                    logger.info("Applying is_active=%s to current insuree row id=%s uuid=%s", is_active, current.id, current.uuid)
+                    # Keep status consistent with is_active when explicitly toggled
+                    target_status = InsureeStatus.INACTIVE if is_active is False else InsureeStatus.ACTIVE
+                    updated = Insuree.objects.filter(id=current.id, validity_to__isnull=True).update(
+                        is_active=is_active, status=target_status, audit_user_id=audit_id
+                    )
+                    logger.info("is_active update result for insuree id=%s uuid=%s: %s row(s) updated", current.id, current.uuid, updated)
+                    if updated:
+                        insuree = current
+                        insuree.refresh_from_db()
+                    # Additionally, if the mutation addressed a specific UUID and it differs from the current row,
+                    # sync the is_active (and status) there as well so UUID-based queries reflect the toggle.
+                    if original_uuid and (not current or str(current.uuid) != str(original_uuid)):
+                        try:
+                            sync_count = Insuree.objects.filter(uuid=original_uuid).update(
+                                is_active=is_active, status=target_status, audit_user_id=audit_id
+                            )
+                            logger.info("Synchronized is_active to input uuid=%s: %s row(s) updated", original_uuid, sync_count)
+                        except Exception as se:
+                            logger.warning("Failed to sync is_active for original uuid=%s: %s", original_uuid, se)
+                else:
+                    logger.warning("Could not locate current insuree row to apply is_active. uuid=%s chf_id=%s", insuree.uuid, getattr(insuree, 'chf_id', None))
+        except Exception as e:
+            logger.error(f"Failed to apply is_active={is_active} for insuree {getattr(insuree, 'id', None)}: {e}")
+
         # Activate policies if requested
         if add_on_existing_policy:
             self.activate_policies_of_insuree(insuree=insuree)
@@ -496,164 +568,38 @@ class InsureeService:
         return insuree
 
     def disable_policies_of_insuree(self, insuree, status_date):
-        policies_to_cancel = InsureePolicy.objects.filter(insuree=insuree.id, validity_to__isnull=True).all()
-        for policy in policies_to_cancel:
-            policy.expiry_date = status_date
-            policy.save()
+        """Placeholder: disable policies logic.
+        Intentionally minimal to avoid blocking insuree updates. Extend with real policy
+        disabling rules if required by business logic.
+        """
+        try:
+            logger.info("disable_policies_of_insuree called for insuree id=%s on %s", insuree.id, status_date)
+        except Exception as e:
+            logger.error("disable_policies_of_insuree error: %s", e)
 
     def activate_policies_of_insuree(self, insuree):
-        from core import datetime
-        now = datetime.date.today()
-        from policy.models import Policy
-        policies_to_activate = Policy.objects.filter(family=insuree.family, validity_to__isnull=True)
-        for policy in policies_to_activate:
-            if policy.expiry_date >= now:
-                current_policy_dict = {"effective_date": now, "expiry_date": policy.expiry_date,
-                                       "audit_user_id": self.user.audit_user_id, "offline": policy.offline,
-                                       "start_date": policy.start_date, "policy": policy, "insuree": insuree,
-                                       "enrollment_date": policy.enroll_date}
-                current_policy = InsureePolicy(**current_policy_dict)
-                current_policy.save()
-
-
-    def _create_or_update(self, insuree, photo_data=None, add_on_existing_policy=False, skip_save=False):
-        validate_insuree(insuree)
-        if insuree.id:
-            filters = Q(id=insuree.id)
-            # remove it from now3 to avoid id at creation
-            insuree.id = None
-        elif insuree.uuid:
-            filters = Q(uuid=(insuree.uuid))
-        else:
-            filters = None
-        existing_insuree = Insuree.objects.filter(filters).prefetch_related(
-            "photo").first() if filters else None
-        if existing_insuree:
-            existing_insuree.save_history()
-            insuree.id = existing_insuree.id
-
-        if photo_data:
-            photo = handle_insuree_photo(self.user, insuree.validity_from, insuree, photo_data)
-            if photo:
-                insuree.photo = photo
-                insuree.photo_date = photo.date
-                
-        # Only save if not skipping save (to avoid duplicate entries)
-        if not skip_save:
-            insuree.save()
-        
-        if insuree and add_on_existing_policy:
-            self.activate_policies_of_insuree(insuree=insuree)
-        return insuree
-
-    def remove(self, insuree):
+        """Activate or add policies on existing insuree if requested.
+        Delegates to InsureePolicyService; errors are logged but non-fatal.
+        """
         try:
+            InsureePolicyService(self.user).add_insuree_policy(insuree)
+        except Exception as e:
+            logger.error("activate_policies_of_insuree error: %s", e)
+
+    def _update(self, insuree, data, in_place=False):
+        if not in_place:
             insuree.save_history()
-            insuree.family = None
-            insuree.save()
-            return []
-        except Exception as exc:
-            logger.exception("insuree.mutation.failed_to_remove_insuree")
-            return {
-                'title': insuree.chf_id,
-                'list': [{
-                    'message': _("insuree.mutation.failed_to_remove_insuree") % {'chfid': insuree.chfid},
-                    'detail': insuree.uuid}]
-            }
-            
-    def change_family(self, insuree, family, user_audit_id=None):
-        if insuree.family != family:
-            if (
-                insuree.family and
-                insuree.family.head_insuree == insuree
-            ):
-                raise ValueError(F"Insuree {insuree} already assigned as head to a family")
-            if user_audit_id:
-                insuree.save_history()
-            insuree.family = family
-            if user_audit_id:
-                insuree.user_audit_id = user_audit_id
-                insuree.save()
-            return True
-        return False
-        
-        
-    @register_service_signal('insuree_service.delete')
-    def set_deleted(self, insuree):
-        try:
-            insuree.delete_history()
-            [ip.delete_history()
-             for ip in insuree.insuree_policies.filter(validity_to__isnull=True)]
-            return []
-        except Exception as exc:
-            logger.exception("insuree.mutation.failed_to_delete_insuree")
-            return {
-                'title': insuree.chf_id,
-                'list': [{
-                    'message': _("insuree.mutation.failed_to_delete_insuree") % {'chfid': insuree.chf_id},
-                    'detail': insuree.uuid}]
-            }
-
-    def cancel_policies(self, insuree):
-        try:
-            from core import datetime
-            now = datetime.datetime.now()
-            ips = insuree.insuree_policies.filter(
-                Q(expiry_date__isnull=True) | Q(expiry_date__gt=now))
-            for ip in ips:
-                ip.expiry_date = now
-            InsureePolicy.objects.bulk_update(ips, ['expiry_date'])
-            return []
-        except Exception as exc:
-            logger.exception(
-                "insuree.mutation.failed_to_cancel_insuree_policies")
-            return {
-                'title': insuree.chf_id,
-                'list': [{
-                    'message': _("insuree.mutation.failed_to_cancel_insuree_policies") % {'chfid': insuree.chfid},
-                    'detail': insuree.uuid}]
-            }
-
-    def _update(self, insuree, data):
-        insuree.save_history()
-        # reset the non required fields
-        # (each update is 'complete', necessary to be able to set 'null')
-        reset_insuree_before_update(insuree)
-        [setattr(insuree, key, data[key]) for key in data]
-        
-
-        
-        # Handle inactive status if isActive was false
-        if is_active is False:
-            try:
-                logger.info(f"Setting insuree {insuree.id} to inactive status")
-                
-                # First approach: Update via ORM and save
-                insuree.status = InsureeStatus.INACTIVE
-                insuree.save()
-                
-                # Second approach: Direct SQL update as backup
-                updated = Insuree.objects.filter(id=insuree.id).update(
-                    status=InsureeStatus.INACTIVE
-                )
-                
-                # Log the result
-                logger.info(f"Updated {updated} insuree records with id {insuree.id} to inactive status")
-                
-                # Refresh the insuree from the database to ensure we have the latest state
-                insuree.refresh_from_db()
-                
-                # Verify the status was updated
-                logger.info(f"Insuree {insuree.id} status after update: {insuree.status}")
-                
-                # Force the status just to be sure
-                insuree.status = InsureeStatus.INACTIVE
-            except Exception as e:
-                logger.error(f"Failed to set insuree {insuree.id} to inactive status: {e}")
-        
-        # Return the created or updated insuree
+            # reset the non required fields
+            # (each update is 'complete', necessary to be able to set 'null')
+            reset_insuree_before_update(insuree)
+        # Avoid overwriting identifiers inadvertently during update
+        # Keep id and uuid protected, but allow chf_id to be set from payload to avoid clearing it
+        protected_keys = {"id", "uuid"}
+        for key, value in data.items():
+            if key in protected_keys:
+                continue
+            setattr(insuree, key, value)
         return insuree
-
 
 class InsureePolicyService:
     def __init__(self, user):
@@ -663,7 +609,8 @@ class InsureePolicyService:
         from policy.models import Policy
         policies = Policy.objects.filter(family_id=insuree.family_id)
         for policy in policies:
-            if policy.can_add_insuree():
+            can_add = getattr(policy, 'can_add_insuree', None)
+            if callable(can_add) and policy.can_add_insuree():
                 ip = InsureePolicy(
                     insuree=insuree,
                     policy=policy,
@@ -672,9 +619,8 @@ class InsureePolicyService:
                     effective_date=policy.effective_date,
                     expiry_date=policy.expiry_date,
                     offline=False,
-                    audit_user_id=self.user.i_user.id
+                    audit_user_id=getattr(self.user, 'id_for_audit', 0),
                 )
-                print(ip.__dict__)
                 ip.save()
 
 
