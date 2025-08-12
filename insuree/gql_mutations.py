@@ -260,6 +260,31 @@ class CreateInsureeMutation(OpenIMISMutation):
             # Remember if isActive was set to false
             is_active_was_false = data.get('is_active') is False
             
+            # Always derive health facility from the authenticated admin (iUser),
+            # ignoring any incoming value from the mutation.
+            # This ensures FSP is tied to the registering admin's facility.
+            try:
+                i_user = getattr(user, 'i_user', None)
+                hf_id = None
+                if i_user is not None:
+                    # Django exposes FK integer via <field>_id
+                    hf_id = getattr(i_user, 'health_facility_id', None)
+                # If FSP is mandatory, ensure we have it from the user context
+                if getattr(InsureeConfig, 'insuree_fsp_mandatory', False) and not hf_id:
+                    raise ValidationError(_("mutation.insuree.fsp_required"))
+                if hf_id:
+                    # Overwrite any provided value from the payload
+                    data['health_facility_id'] = hf_id
+                else:
+                    # If not mandatory and admin has no HF, drop any provided value to avoid misuse
+                    data.pop('health_facility_id', None)
+            except ValidationError:
+                # Re-raise validation errors to be handled by the outer except
+                raise
+            except Exception as e:
+                logger.warning(f"Failed to derive health facility from user context: {e}")
+                # Fall back: if mandatory, the service will catch missing FSP and raise
+            
             # Create the insuree
             insuree = update_or_create_insuree(data, user)
             
