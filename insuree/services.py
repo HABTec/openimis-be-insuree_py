@@ -297,18 +297,12 @@ def validate_worker_data(insuree):
 
 
 def validate_insuree(insuree):
-    # Accept new insurance number format: region_code/auto_id/member_no/year/admin_id
+    # Accept only 9-digit numeric CBHI/CHF IDs (no slashes, no letters)
     import re
     chf_id = insuree.chf_id
-    # Example: ኮቀ/0001/1/09/125
-    # Accept three flexible formats:
-    # 1. region/district/auto_id/family_no/admin
-    # 2. district/auto_id/family_no/admin
-    # 3. auto_id/family_no/admin
-    # Accept the three flexible formats ending with 4-digit year
-    pattern = r"^((?:[\w\u1200-\u137F]{2,}/){2}\d{4,}/\d+/\d+/\d{4}|\d{4,}/[\w\u1200-\u137F]{2,}/\d+/\d+/\d{4}|\d{4,}/\d+/\d+/\d{4})$"
+    pattern = r"^\d{9}$"
     if not chf_id or not re.match(pattern, chf_id):
-        raise ValidationError("invalid_insuree_number: chf_id must be in the format region_code/auto_id/member_no/year/admin_id, e.g., ኮቀ/0001/1/09/125")
+        raise ValidationError("invalid_insuree_number: chf_id must be a 9-digit number (e.g., 123456789)")
 
     if InsureeConfig.insuree_as_worker:
         validate_worker_data(insuree)
@@ -325,7 +319,9 @@ class InsureeService:
         # Extract data that's not part of the Insuree model
         photo_data = data.pop('photo', None)
         add_on_existing_policy = data.pop('add_on_existing_policy', False)
-        chf_id_format = int(data.pop('chf_id_format', 1))  # 1=region+district+auto, 2=district+auto, 3=auto only
+        # chf_id_format is deprecated; generation now uses a simple 9-digit random number
+        # chf_id_format = int(data.pop('chf_id_format', 1))
+        data.pop('chf_id_format', None)
         no_versioning = bool(data.pop('no_versioning', False))
         
         # Observe is_active but don't remove it from data; let update apply it directly
@@ -356,9 +352,7 @@ class InsureeService:
         if status not in [choice[0] for choice in InsureeStatus.choices]:
             raise ValidationError(_("mutation.insuree.wrong_status"))
             
-        # Validate CHF ID format
-        if chf_id_format not in [1, 2, 3]:
-            raise ValidationError(_("invalid_chf_id_format"))
+        # Deprecated: CHF ID format validation removed (we always generate 9-digit IDs)
             
         # Find existing insuree if updating (uuid indicates update intent)
         insuree = None
@@ -435,7 +429,7 @@ class InsureeService:
                 # Store in dedicated column for reporting/filtering
                 data['legacy_chf_id'] = provided_chf
             try:
-                data['chf_id'] = self.generate_unique_chf_id(data, chf_id_format)
+                data['chf_id'] = self.generate_unique_chf_id()
             except Exception as e:
                 logger.error("Failed to generate CHFID on create, leaving provided value as-is. Error: %s", e)
         else:
@@ -576,91 +570,19 @@ class InsureeService:
             
         return insuree
 
-    def generate_unique_chf_id(self, data: dict, chf_id_format: int = 1) -> str:
-        """Generate a CHFID matching accepted patterns and ensure uniqueness.
-        chf_id_format:
-          1 = region/district/auto/member/admin/year
-          2 = district/auto/member/admin/year
-          3 = auto/member/admin/year
-        Fallbacks (RG/DS) are used if no location context is available.
-        """
-        from core import datetime
-        # Try to infer region/district from provided family/location references
-        region = 'RG'
-        district = 'DS'
-        location_found = False
-        try:
-            # When creating, data may include family or current_village; try family first
-            fam = data.get('family') or data.get('family_id')
-            village = data.get('current_village') or data.get('current_village_id')
-            location_obj = None
-            if fam and isinstance(fam, Family):
-                location_obj = getattr(fam, 'location', None)
-            # Fallback to insuree.current_village's district
-            if not location_obj and village and hasattr(village, 'parent'):
-                # village.parent -> ward, village.parent.parent -> district
-                location_obj = getattr(village, 'parent', None)
-                if location_obj:
-                    location_obj = getattr(location_obj, 'parent', None)
-            # Derive abbreviations
-            if location_obj and hasattr(location_obj, 'parent') and getattr(location_obj, 'parent', None):
-                # location_obj is district; region is parent
-                region = _abbr(getattr(location_obj.parent, 'name', None)) or region
-                district = _abbr(getattr(location_obj, 'name', None)) or district
-                location_found = True
-        except Exception as e:
-            logger.debug("CHFID location derivation failed: %s", e)
-
-        # If we couldn't determine both region and district, force format 3 (auto/member/admin/year)
-        if not location_found and chf_id_format in (1, 2):
-            chf_id_format = 3
-
-        # Member number: 1 for head if provided in data, else 1
-        member_no = 1
-        try:
-            if 'head' in data and data.get('head') is True:
-                member_no = 1
-            elif 'relationship' in data and getattr(data.get('relationship'), 'id', None):
-                # if relationship is available, assign 2 as a generic non-head index
-                member_no = 2
-        except Exception:
-            pass
-
-        admin_id = 0
-        try:
-            admin_id = getattr(self.user, 'id_for_audit', 0) or 0
-        except Exception:
-            admin_id = 0
-
-        year = datetime.datetime.now().year
-
-        # Build candidate according to format
-        def build_candidate(seq: str) -> str:
-            return seq
-        # auto: 6-digit random-like increasing suffix to reduce collision risk
+    def generate_unique_chf_id(self) -> str:
+        """Generate a unique 9-digit numeric CHFID (no slashes, no letters)."""
         import random
-        for _ in range(COLLISION_RETRY_ATTEMPTS):  # try up to 20 times to avoid rare collisions
-            auto_id = f"{random.randint(100000, 999999)}"
-            if chf_id_format == 1:
-                candidate = f"{region}/{district}/{auto_id}/{member_no}/{admin_id}/{year}"
-            elif chf_id_format == 2:
-                candidate = f"{district}/{auto_id}/{member_no}/{admin_id}/{year}"
-            else:
-                candidate = f"{auto_id}/{member_no}/{admin_id}/{year}"
-
-            # Ensure uniqueness against current valid insurees
+        rng = random.SystemRandom()
+        for _ in range(COLLISION_RETRY_ATTEMPTS):
+            candidate = f"{rng.randint(100000000, 999999999)}"  # 9 digits
             if not Insuree.objects.filter(chf_id=candidate, validity_to__isnull=True).exists():
                 return candidate
-
-        # As a last resort, append a UUID fragment
-        uuid_fragment = uuid.uuid4().hex[:6]
-        if chf_id_format == 1:
-            fallback = f"{region}/{district}/{uuid_fragment}/{member_no}/{admin_id}/{year}"
-        elif chf_id_format == 2:
-            fallback = f"{district}/{uuid_fragment}/{member_no}/{admin_id}/{year}"
-        else:
-            fallback = f"{uuid_fragment}/{member_no}/{admin_id}/{year}"
-        return fallback
+        # Fallback: derive 9 digits from UUID hex
+        digits = ''.join(ch for ch in uuid.uuid4().hex if ch.isdigit())
+        if len(digits) < 9:
+            digits = (digits + '0'*9)[:9]
+        return digits[:9]
 
     def disable_policies_of_insuree(self, insuree, status_date):
         """Placeholder: disable policies logic.
