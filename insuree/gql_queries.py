@@ -196,14 +196,6 @@ class FamilyGQLType(DjangoObjectType):
     client_mutation_id = graphene.String()
 
     def resolve_location(self, info):
-        """Safely resolve the family's location.
-
-        When a family has no associated location (``self.location_id`` is ``None``)
-        we must avoid calling the DataLoader with a ``None`` value, otherwise
-        Graphene raises: ``The loader.load() function must be called with a
-        value, but got: None``.  This check mirrors the guards already present
-        in other resolvers (e.g. ``InsureeGQLType.resolve_current_village``).
-        """
         if not info.context.user.has_perms(InsureeConfig.gql_query_families_perms):
             raise PermissionDenied(_("unauthorized"))
 
