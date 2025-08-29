@@ -13,6 +13,12 @@ from django.core.exceptions import PermissionDenied
 from .services import load_photo_file
 
 
+class MyReservedInsureeIdsGQLType(graphene.ObjectType):
+    """Lightweight type to return reserved/used CHFIDs for current user context."""
+    reserved = graphene.List(graphene.String)
+    used = graphene.List(graphene.String)
+
+
 class GenderGQLType(DjangoObjectType):
     class Meta:
         model = Gender
@@ -198,8 +204,13 @@ class FamilyGQLType(DjangoObjectType):
     def resolve_location(self, info):
         if not info.context.user.has_perms(InsureeConfig.gql_query_families_perms):
             raise PermissionDenied(_("unauthorized"))
-        if "location_loader" in info.context.dataloaders:
+
+        # Only call the dataloader if we have a valid foreign-key id
+        if "location_loader" in info.context.dataloaders and self.location_id:
             return info.context.dataloaders["location_loader"].load(self.location_id)
+
+        # Fallback to the raw relation (may be ``None``)
+        return self.location
 
     def resolve_head_insuree(self, info):
         if not info.context.user.has_perms(InsureeConfig.gql_query_families_perms):

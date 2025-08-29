@@ -13,9 +13,10 @@ from django.utils.translation import gettext as _
 from core.signals import register_service_signal
 from insuree.apps import InsureeConfig
 from insuree.models import (InsureePhoto, PolicyRenewalDetail, Insuree, Family, InsureePolicy, InsureeStatus,
-                            InsureeStatusReason)
+                            InsureeStatusReason, InsureeIdReservation, ReservationStatus)
 from django.core.exceptions import ValidationError
 from core.models import filter_validity, resolved_id_reference
+from django.db import transaction
 
 logger = logging.getLogger(__name__)
 from django.conf import settings
@@ -297,23 +298,152 @@ def validate_worker_data(insuree):
 
 
 def validate_insuree(insuree):
-    # Accept new insurance number format: region_code/auto_id/member_no/year/admin_id
+    # Accept only 9-digit numeric CBHI/CHF IDs (no slashes, no letters)
     import re
     chf_id = insuree.chf_id
-    # Example: ኮቀ/0001/1/09/125
-    # Accept three flexible formats:
-    # 1. region/district/auto_id/family_no/admin
-    # 2. district/auto_id/family_no/admin
-    # 3. auto_id/family_no/admin
-    # Accept the three flexible formats ending with 4-digit year
-    pattern = r"^((?:[\w\u1200-\u137F]{2,}/){2}\d{4,}/\d+/\d+/\d{4}|\d{4,}/[\w\u1200-\u137F]{2,}/\d+/\d+/\d{4}|\d{4,}/\d+/\d+/\d{4})$"
+    pattern = r"^\d{9}$"
     if not chf_id or not re.match(pattern, chf_id):
-        raise ValidationError("invalid_insuree_number: chf_id must be in the format region_code/auto_id/member_no/year/admin_id, e.g., ኮቀ/0001/1/09/125")
+        raise ValidationError("invalid_insuree_number: chf_id must be a 9-digit number (e.g., 123456789)")
 
     if InsureeConfig.insuree_as_worker:
         validate_worker_data(insuree)
     else:
         validate_insuree_data(insuree)
+
+
+class InsureeIdReservationService:
+    def __init__(self, user):
+        self.user = user
+
+    def _current_hf_id(self):
+        try:
+            i_user = getattr(self.user, 'i_user', None)
+            return getattr(i_user, 'health_facility_id', None) if i_user else None
+        except Exception:
+            return None
+
+    def _current_officer(self):
+        try:
+            from core.models import Officer
+            # Common mappings: user.i_user may link to Officer via officer.user
+            i_user = getattr(self.user, 'i_user', None)
+            if i_user:
+                officer = getattr(i_user, 'officer', None)
+                if officer:
+                    return officer
+                # fallback by FK
+                off = Officer.objects.filter(user=i_user, validity_to__isnull=True).first()
+                if off:
+                    return off
+            # as last resort, try by user id_for_audit
+            off = Officer.objects.filter(validity_to__isnull=True).first()
+            return off
+        except Exception:
+            return None
+
+    @transaction.atomic
+    def reserve_new(self, amount: int) -> list:
+        if amount <= 0:
+            return []
+        hf_id = self._current_hf_id()
+        officer = self._current_officer()
+        reserved = []
+        for _ in range(amount):
+            chf_id = InsureeService(self.user).generate_unique_chf_id()
+            obj = InsureeIdReservation(
+                chf_id=chf_id,
+                reserved_hf_id=hf_id,
+                reserved_officer=officer,
+                reserved_by_user_id=getattr(self.user, 'id_for_audit', 0),
+                status=ReservationStatus.RESERVED,
+                audit_user_id=getattr(self.user, 'id_for_audit', 0),
+            )
+            obj.save()
+            reserved.append(chf_id)
+        return reserved
+
+    def get_my(self):
+        hf_id = self._current_hf_id()
+        officer = self._current_officer()
+        qs = InsureeIdReservation.objects.filter(validity_to__isnull=True)
+        if hf_id:
+            qs = qs.filter(reserved_hf_id=hf_id)
+        if officer:
+            qs = qs.filter(reserved_officer_id=getattr(officer, 'id', None))
+        return qs.order_by('id')
+
+    @transaction.atomic
+    def delete_reserved(self, chf_ids: list) -> int:
+        if not chf_ids:
+            return 0
+        hf_id = self._current_hf_id()
+        officer = self._current_officer()
+        qs = InsureeIdReservation.objects.select_for_update().filter(
+            chf_id__in=chf_ids,
+            status=ReservationStatus.RESERVED,
+            validity_to__isnull=True,
+        )
+        if hf_id:
+            qs = qs.filter(reserved_hf_id=hf_id)
+        if officer:
+            qs = qs.filter(reserved_officer_id=getattr(officer, 'id', None))
+        count = 0
+        for r in qs:
+            r.status = ReservationStatus.CANCELLED
+            r.audit_user_id = getattr(self.user, 'id_for_audit', 0)
+            r.save()
+            count += 1
+        return count
+
+    @transaction.atomic
+    def assert_available_and_assign_to_payload(self, reserved_chf_id: str, payload: dict):
+        # First, check if the ID exists and is already USED
+        existing_any = InsureeIdReservation.objects.filter(
+            chf_id=str(reserved_chf_id),
+            validity_to__isnull=True,
+        ).first()
+        if existing_any and existing_any.status == ReservationStatus.USED:
+            # Explicitly block using a CHFID that's already used
+            raise ValidationError(_("reserved_id_already_used"))
+
+        # Then, check if it's RESERVED and lock the row to assign
+        r = InsureeIdReservation.objects.select_for_update().filter(
+            chf_id=str(reserved_chf_id),
+            status=ReservationStatus.RESERVED,
+            validity_to__isnull=True,
+        ).first()
+        if not r:
+            raise ValidationError(_("reserved_id_not_available"))
+        # Scope enforcement: same HF/officer as current user if present
+        hf_id = self._current_hf_id()
+        off = self._current_officer()
+        if (r.reserved_hf_id and hf_id and r.reserved_hf_id != hf_id) or \
+           (r.reserved_officer_id and off and r.reserved_officer_id != getattr(off, 'id', None)):
+            raise ValidationError(_("reserved_id_wrong_scope"))
+        # Assign into payload
+        payload['chf_id'] = r.chf_id
+
+    @transaction.atomic
+    def mark_used(self, reserved_chf_id: str, insuree: Insuree):
+        r = InsureeIdReservation.objects.select_for_update().filter(
+            chf_id=str(reserved_chf_id),
+            status=ReservationStatus.RESERVED,
+            validity_to__isnull=True,
+        ).first()
+        if not r:
+            # If already used, explicitly block with a distinct error code
+            existing = InsureeIdReservation.objects.filter(
+                chf_id=str(reserved_chf_id),
+                validity_to__isnull=True,
+            ).first()
+            if existing and existing.status == ReservationStatus.USED:
+                raise ValidationError(_("reserved_id_already_used"))
+            # Otherwise, it's simply not available for use
+            raise ValidationError(_("reserved_id_not_available"))
+        r.status = ReservationStatus.USED
+        r.used_by_insuree = insuree
+        r.audit_user_id = getattr(self.user, 'id_for_audit', 0)
+        r.save()
 
 
 class InsureeService:
@@ -325,7 +455,9 @@ class InsureeService:
         # Extract data that's not part of the Insuree model
         photo_data = data.pop('photo', None)
         add_on_existing_policy = data.pop('add_on_existing_policy', False)
-        chf_id_format = int(data.pop('chf_id_format', 1))  # 1=region+district+auto, 2=district+auto, 3=auto only
+        # chf_id_format is deprecated; generation now uses a simple 9-digit random number
+        # chf_id_format = int(data.pop('chf_id_format', 1))
+        data.pop('chf_id_format', None)
         no_versioning = bool(data.pop('no_versioning', False))
         
         # Observe is_active but don't remove it from data; let update apply it directly
@@ -356,9 +488,7 @@ class InsureeService:
         if status not in [choice[0] for choice in InsureeStatus.choices]:
             raise ValidationError(_("mutation.insuree.wrong_status"))
             
-        # Validate CHF ID format
-        if chf_id_format not in [1, 2, 3]:
-            raise ValidationError(_("invalid_chf_id_format"))
+        # Deprecated: CHF ID format validation removed (we always generate 9-digit IDs)
             
         # Find existing insuree if updating (uuid indicates update intent)
         insuree = None
@@ -427,17 +557,24 @@ class InsureeService:
         if InsureeConfig.insuree_fsp_mandatory and 'health_facility_id' not in data:
             raise ValidationError("mutation.insuree.fsp_required")
 
+        # Reserved CHFID support (from offline pre-reservation)
+        reserved_chf_id = data.pop('reserved_chf_id', None)
+
         # Treat any provided chf_id as legacy (from manual system) and always generate a fresh chf_id
         creating = insuree is None
         provided_chf = data.get('chf_id')
         if creating:
-            if provided_chf:
-                # Store in dedicated column for reporting/filtering
-                data['legacy_chf_id'] = provided_chf
-            try:
-                data['chf_id'] = self.generate_unique_chf_id(data, chf_id_format)
-            except Exception as e:
-                logger.error("Failed to generate CHFID on create, leaving provided value as-is. Error: %s", e)
+            if reserved_chf_id:
+                # Enforce that reserved_chf_id belongs to current user context and is still RESERVED
+                InsureeIdReservationService(self.user).assert_available_and_assign_to_payload(reserved_chf_id, data)
+            else:
+                if provided_chf:
+                    # Store in dedicated column for reporting/filtering
+                    data['legacy_chf_id'] = provided_chf
+                try:
+                    data['chf_id'] = self.generate_unique_chf_id()
+                except Exception as e:
+                    logger.error("Failed to generate CHFID on create, leaving provided value as-is. Error: %s", e)
         else:
             # On update, never regenerate or overwrite CHFID; drop any incoming chf_id from payload
             if 'chf_id' in data:
@@ -475,6 +612,13 @@ class InsureeService:
                 insuree.photo = photo
                 insuree.photo_date = photo.date
                 insuree.save()
+
+        # If using a reserved CHFID, mark it USED now that the insuree exists
+        try:
+            if creating and reserved_chf_id:
+                InsureeIdReservationService(self.user).mark_used(reserved_chf_id, insuree)
+        except Exception as e:
+            logger.error("Failed to mark reserved CHFID %s as used: %s", reserved_chf_id, e)
 
         # Apply explicit is_active toggle if it was provided in the payload.
         # Apply it reliably by targeting the most recent row for this UUID, in case versioning changed the PK.
@@ -576,91 +720,24 @@ class InsureeService:
             
         return insuree
 
-    def generate_unique_chf_id(self, data: dict, chf_id_format: int = 1) -> str:
-        """Generate a CHFID matching accepted patterns and ensure uniqueness.
-        chf_id_format:
-          1 = region/district/auto/member/admin/year
-          2 = district/auto/member/admin/year
-          3 = auto/member/admin/year
-        Fallbacks (RG/DS) are used if no location context is available.
-        """
-        from core import datetime
-        # Try to infer region/district from provided family/location references
-        region = 'RG'
-        district = 'DS'
-        location_found = False
-        try:
-            # When creating, data may include family or current_village; try family first
-            fam = data.get('family') or data.get('family_id')
-            village = data.get('current_village') or data.get('current_village_id')
-            location_obj = None
-            if fam and isinstance(fam, Family):
-                location_obj = getattr(fam, 'location', None)
-            # Fallback to insuree.current_village's district
-            if not location_obj and village and hasattr(village, 'parent'):
-                # village.parent -> ward, village.parent.parent -> district
-                location_obj = getattr(village, 'parent', None)
-                if location_obj:
-                    location_obj = getattr(location_obj, 'parent', None)
-            # Derive abbreviations
-            if location_obj and hasattr(location_obj, 'parent') and getattr(location_obj, 'parent', None):
-                # location_obj is district; region is parent
-                region = _abbr(getattr(location_obj.parent, 'name', None)) or region
-                district = _abbr(getattr(location_obj, 'name', None)) or district
-                location_found = True
-        except Exception as e:
-            logger.debug("CHFID location derivation failed: %s", e)
-
-        # If we couldn't determine both region and district, force format 3 (auto/member/admin/year)
-        if not location_found and chf_id_format in (1, 2):
-            chf_id_format = 3
-
-        # Member number: 1 for head if provided in data, else 1
-        member_no = 1
-        try:
-            if 'head' in data and data.get('head') is True:
-                member_no = 1
-            elif 'relationship' in data and getattr(data.get('relationship'), 'id', None):
-                # if relationship is available, assign 2 as a generic non-head index
-                member_no = 2
-        except Exception:
-            pass
-
-        admin_id = 0
-        try:
-            admin_id = getattr(self.user, 'id_for_audit', 0) or 0
-        except Exception:
-            admin_id = 0
-
-        year = datetime.datetime.now().year
-
-        # Build candidate according to format
-        def build_candidate(seq: str) -> str:
-            return seq
-        # auto: 6-digit random-like increasing suffix to reduce collision risk
+    def generate_unique_chf_id(self) -> str:
+        """Generate a unique 9-digit numeric CHFID (no slashes, no letters)."""
         import random
-        for _ in range(COLLISION_RETRY_ATTEMPTS):  # try up to 20 times to avoid rare collisions
-            auto_id = f"{random.randint(100000, 999999)}"
-            if chf_id_format == 1:
-                candidate = f"{region}/{district}/{auto_id}/{member_no}/{admin_id}/{year}"
-            elif chf_id_format == 2:
-                candidate = f"{district}/{auto_id}/{member_no}/{admin_id}/{year}"
-            else:
-                candidate = f"{auto_id}/{member_no}/{admin_id}/{year}"
-
-            # Ensure uniqueness against current valid insurees
-            if not Insuree.objects.filter(chf_id=candidate, validity_to__isnull=True).exists():
+        rng = random.SystemRandom()
+        for _ in range(COLLISION_RETRY_ATTEMPTS):
+            candidate = f"{rng.randint(100000000, 999999999)}"  # 9 digits
+            # Must not collide with active insurees nor with reserved-but-unused IDs
+            exists_in_insuree = Insuree.objects.filter(chf_id=candidate, validity_to__isnull=True).exists()
+            exists_in_reserved = InsureeIdReservation.objects.filter(
+                chf_id=candidate, status=ReservationStatus.RESERVED, validity_to__isnull=True
+            ).exists()
+            if not exists_in_insuree and not exists_in_reserved:
                 return candidate
-
-        # As a last resort, append a UUID fragment
-        uuid_fragment = uuid.uuid4().hex[:6]
-        if chf_id_format == 1:
-            fallback = f"{region}/{district}/{uuid_fragment}/{member_no}/{admin_id}/{year}"
-        elif chf_id_format == 2:
-            fallback = f"{district}/{uuid_fragment}/{member_no}/{admin_id}/{year}"
-        else:
-            fallback = f"{uuid_fragment}/{member_no}/{admin_id}/{year}"
-        return fallback
+        # Fallback: derive 9 digits from UUID hex
+        digits = ''.join(ch for ch in uuid.uuid4().hex if ch.isdigit())
+        if len(digits) < 9:
+            digits = (digits + '0'*9)[:9]
+        return digits[:9]
 
     def disable_policies_of_insuree(self, insuree, status_date):
         """Placeholder: disable policies logic.

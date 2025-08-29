@@ -15,7 +15,7 @@ import graphene_django_optimizer as gql_optimizer
 from location.models import Location, LocationManager
 
 from insuree.apps import InsureeConfig
-from insuree.services import validate_insuree_number
+from insuree.services import validate_insuree_number, InsureeIdReservationService
 from .models import FamilyMutation, InsureeMutation
 from django.utils.translation import gettext as _
 from location.apps import LocationConfig
@@ -122,6 +122,8 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         insuree_number=graphene.String(required=True),
         description="Checks that the specified insuree number is valid"
     )
+    # Offline CHFID reservation: fetch reserved/used IDs for current user context
+    my_reserved_insuree_ids = graphene.Field(MyReservedInsureeIdsGQLType)
 
     def resolve_insuree_number_validity(self, info, **kwargs):
         if not info.context.user.has_perms(InsureeConfig.gql_query_insurees_perms):
@@ -131,6 +133,15 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             return ValidationMessageGQLType(False, errors[0]['errorCode'], errors[0]['message'])
         else:
             return ValidationMessageGQLType(True, 0, "")
+
+    def resolve_my_reserved_insuree_ids(self, info, **kwargs):
+        # Reuse create_insurees permission to manage offline CHFID reservations
+        if not info.context.user.has_perms(InsureeConfig.gql_mutation_create_insurees_perms):
+            raise PermissionDenied(_("unauthorized"))
+        qs = InsureeIdReservationService(info.context.user).get_my()
+        reserved = list(qs.filter(status="RS").values_list('chf_id', flat=True))
+        used = list(qs.filter(status="US").values_list('chf_id', flat=True))
+        return MyReservedInsureeIdsGQLType(reserved=reserved, used=used)
 
     def resolve_can_add_insuree(self, info, **kwargs):
         if not info.context.user.has_perms(InsureeConfig.gql_query_insuree_perms):
@@ -343,6 +354,10 @@ class Mutation(graphene.ObjectType):
     remove_insurees = RemoveInsureesMutation.Field()
     set_family_head = SetFamilyHeadMutation.Field()
     change_insuree_family = ChangeInsureeFamilyMutation.Field()
+    # Offline CHFID reservation mutations
+    reserve_insuree_ids = ReserveInsureeIdsMutation.Field()
+    delete_reserved_insuree_ids = DeleteReservedInsureeIdsMutation.Field()
+    get_my_reserved_insuree_ids = GetMyReservedInsureeIdsMutation.Field()
 
 
 def on_family_mutation(kwargs, k='uuid'):

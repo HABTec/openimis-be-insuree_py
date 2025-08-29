@@ -453,3 +453,44 @@ class PolicyRenewalDetail(core_models.VersionedModel):
     class Meta:
         managed = True
         db_table = 'tblPolicyRenewalDetails'
+
+
+# Offline reservation of CHFIDs for Insurees
+class ReservationStatus(models.TextChoices):
+    RESERVED = "RS", _("Reserved")
+    USED = "US", _("Used")
+    CANCELLED = "CA", _("Cancelled")
+
+
+class InsureeIdReservation(core_models.VersionedModel):
+    """
+    Stores pre-generated CHF IDs reserved for offline use by a specific officer/user and HF.
+    A reservation is considered consumed when an insuree is created with the reserved CHFID.
+    """
+    id = models.AutoField(primary_key=True)
+    uuid = models.CharField(max_length=36, default=uuid.uuid4, unique=True)
+
+    # The actual CHFID reserved (9-digit per validate_insuree())
+    chf_id = models.CharField(max_length=50, unique=True, db_index=True)
+
+    # Scoping fields
+    reserved_hf = models.ForeignKey(
+        location_models.HealthFacility, models.DO_NOTHING, blank=True, null=True,
+        related_name="reserved_insuree_ids"
+    )
+    reserved_officer = models.ForeignKey(
+        'core.Officer', models.DO_NOTHING, blank=True, null=True,
+        related_name="reserved_insuree_ids"
+    )
+    reserved_by_user_id = models.IntegerField(blank=True, null=True)
+
+    # Status
+    status = models.CharField(max_length=2, choices=ReservationStatus.choices, default=ReservationStatus.RESERVED)
+    used_by_insuree = models.ForeignKey(
+        'insuree.Insuree', models.DO_NOTHING, blank=True, null=True, related_name='used_reservations'
+    )
+    audit_user_id = models.IntegerField(db_column='AuditUserID', null=True, blank=True)
+
+    class Meta:
+        managed = True
+        db_table = 'insuree_IdReservation'
