@@ -13,9 +13,10 @@ from django.utils.translation import gettext as _
 from core.signals import register_service_signal
 from insuree.apps import InsureeConfig
 from insuree.models import (InsureePhoto, PolicyRenewalDetail, Insuree, Family, InsureePolicy, InsureeStatus,
-                            InsureeStatusReason)
+                            InsureeStatusReason, InsureeIdReservation, ReservationStatus)
 from django.core.exceptions import ValidationError
 from core.models import filter_validity, resolved_id_reference
+from django.db import transaction
 
 logger = logging.getLogger(__name__)
 from django.conf import settings
@@ -310,6 +311,141 @@ def validate_insuree(insuree):
         validate_insuree_data(insuree)
 
 
+class InsureeIdReservationService:
+    def __init__(self, user):
+        self.user = user
+
+    def _current_hf_id(self):
+        try:
+            i_user = getattr(self.user, 'i_user', None)
+            return getattr(i_user, 'health_facility_id', None) if i_user else None
+        except Exception:
+            return None
+
+    def _current_officer(self):
+        try:
+            from core.models import Officer
+            # Common mappings: user.i_user may link to Officer via officer.user
+            i_user = getattr(self.user, 'i_user', None)
+            if i_user:
+                officer = getattr(i_user, 'officer', None)
+                if officer:
+                    return officer
+                # fallback by FK
+                off = Officer.objects.filter(user=i_user, validity_to__isnull=True).first()
+                if off:
+                    return off
+            # as last resort, try by user id_for_audit
+            off = Officer.objects.filter(validity_to__isnull=True).first()
+            return off
+        except Exception:
+            return None
+
+    @transaction.atomic
+    def reserve_new(self, amount: int) -> list:
+        if amount <= 0:
+            return []
+        hf_id = self._current_hf_id()
+        officer = self._current_officer()
+        reserved = []
+        for _ in range(amount):
+            chf_id = InsureeService(self.user).generate_unique_chf_id()
+            obj = InsureeIdReservation(
+                chf_id=chf_id,
+                reserved_hf_id=hf_id,
+                reserved_officer=officer,
+                reserved_by_user_id=getattr(self.user, 'id_for_audit', 0),
+                status=ReservationStatus.RESERVED,
+                audit_user_id=getattr(self.user, 'id_for_audit', 0),
+            )
+            obj.save()
+            reserved.append(chf_id)
+        return reserved
+
+    def get_my(self):
+        hf_id = self._current_hf_id()
+        officer = self._current_officer()
+        qs = InsureeIdReservation.objects.filter(validity_to__isnull=True)
+        if hf_id:
+            qs = qs.filter(reserved_hf_id=hf_id)
+        if officer:
+            qs = qs.filter(reserved_officer_id=getattr(officer, 'id', None))
+        return qs.order_by('id')
+
+    @transaction.atomic
+    def delete_reserved(self, chf_ids: list) -> int:
+        if not chf_ids:
+            return 0
+        hf_id = self._current_hf_id()
+        officer = self._current_officer()
+        qs = InsureeIdReservation.objects.select_for_update().filter(
+            chf_id__in=chf_ids,
+            status=ReservationStatus.RESERVED,
+            validity_to__isnull=True,
+        )
+        if hf_id:
+            qs = qs.filter(reserved_hf_id=hf_id)
+        if officer:
+            qs = qs.filter(reserved_officer_id=getattr(officer, 'id', None))
+        count = 0
+        for r in qs:
+            r.status = ReservationStatus.CANCELLED
+            r.audit_user_id = getattr(self.user, 'id_for_audit', 0)
+            r.save()
+            count += 1
+        return count
+
+    @transaction.atomic
+    def assert_available_and_assign_to_payload(self, reserved_chf_id: str, payload: dict):
+        # First, check if the ID exists and is already USED
+        existing_any = InsureeIdReservation.objects.filter(
+            chf_id=str(reserved_chf_id),
+            validity_to__isnull=True,
+        ).first()
+        if existing_any and existing_any.status == ReservationStatus.USED:
+            # Explicitly block using a CHFID that's already used
+            raise ValidationError(_("reserved_id_already_used"))
+
+        # Then, check if it's RESERVED and lock the row to assign
+        r = InsureeIdReservation.objects.select_for_update().filter(
+            chf_id=str(reserved_chf_id),
+            status=ReservationStatus.RESERVED,
+            validity_to__isnull=True,
+        ).first()
+        if not r:
+            raise ValidationError(_("reserved_id_not_available"))
+        # Scope enforcement: same HF/officer as current user if present
+        hf_id = self._current_hf_id()
+        off = self._current_officer()
+        if (r.reserved_hf_id and hf_id and r.reserved_hf_id != hf_id) or \
+           (r.reserved_officer_id and off and r.reserved_officer_id != getattr(off, 'id', None)):
+            raise ValidationError(_("reserved_id_wrong_scope"))
+        # Assign into payload
+        payload['chf_id'] = r.chf_id
+
+    @transaction.atomic
+    def mark_used(self, reserved_chf_id: str, insuree: Insuree):
+        r = InsureeIdReservation.objects.select_for_update().filter(
+            chf_id=str(reserved_chf_id),
+            status=ReservationStatus.RESERVED,
+            validity_to__isnull=True,
+        ).first()
+        if not r:
+            # If already used, explicitly block with a distinct error code
+            existing = InsureeIdReservation.objects.filter(
+                chf_id=str(reserved_chf_id),
+                validity_to__isnull=True,
+            ).first()
+            if existing and existing.status == ReservationStatus.USED:
+                raise ValidationError(_("reserved_id_already_used"))
+            # Otherwise, it's simply not available for use
+            raise ValidationError(_("reserved_id_not_available"))
+        r.status = ReservationStatus.USED
+        r.used_by_insuree = insuree
+        r.audit_user_id = getattr(self.user, 'id_for_audit', 0)
+        r.save()
+
+
 class InsureeService:
     def __init__(self, user):
         self.user = user
@@ -421,17 +557,24 @@ class InsureeService:
         if InsureeConfig.insuree_fsp_mandatory and 'health_facility_id' not in data:
             raise ValidationError("mutation.insuree.fsp_required")
 
+        # Reserved CHFID support (from offline pre-reservation)
+        reserved_chf_id = data.pop('reserved_chf_id', None)
+
         # Treat any provided chf_id as legacy (from manual system) and always generate a fresh chf_id
         creating = insuree is None
         provided_chf = data.get('chf_id')
         if creating:
-            if provided_chf:
-                # Store in dedicated column for reporting/filtering
-                data['legacy_chf_id'] = provided_chf
-            try:
-                data['chf_id'] = self.generate_unique_chf_id()
-            except Exception as e:
-                logger.error("Failed to generate CHFID on create, leaving provided value as-is. Error: %s", e)
+            if reserved_chf_id:
+                # Enforce that reserved_chf_id belongs to current user context and is still RESERVED
+                InsureeIdReservationService(self.user).assert_available_and_assign_to_payload(reserved_chf_id, data)
+            else:
+                if provided_chf:
+                    # Store in dedicated column for reporting/filtering
+                    data['legacy_chf_id'] = provided_chf
+                try:
+                    data['chf_id'] = self.generate_unique_chf_id()
+                except Exception as e:
+                    logger.error("Failed to generate CHFID on create, leaving provided value as-is. Error: %s", e)
         else:
             # On update, never regenerate or overwrite CHFID; drop any incoming chf_id from payload
             if 'chf_id' in data:
@@ -469,6 +612,13 @@ class InsureeService:
                 insuree.photo = photo
                 insuree.photo_date = photo.date
                 insuree.save()
+
+        # If using a reserved CHFID, mark it USED now that the insuree exists
+        try:
+            if creating and reserved_chf_id:
+                InsureeIdReservationService(self.user).mark_used(reserved_chf_id, insuree)
+        except Exception as e:
+            logger.error("Failed to mark reserved CHFID %s as used: %s", reserved_chf_id, e)
 
         # Apply explicit is_active toggle if it was provided in the payload.
         # Apply it reliably by targeting the most recent row for this UUID, in case versioning changed the PK.
@@ -576,7 +726,12 @@ class InsureeService:
         rng = random.SystemRandom()
         for _ in range(COLLISION_RETRY_ATTEMPTS):
             candidate = f"{rng.randint(100000000, 999999999)}"  # 9 digits
-            if not Insuree.objects.filter(chf_id=candidate, validity_to__isnull=True).exists():
+            # Must not collide with active insurees nor with reserved-but-unused IDs
+            exists_in_insuree = Insuree.objects.filter(chf_id=candidate, validity_to__isnull=True).exists()
+            exists_in_reserved = InsureeIdReservation.objects.filter(
+                chf_id=candidate, status=ReservationStatus.RESERVED, validity_to__isnull=True
+            ).exists()
+            if not exists_in_insuree and not exists_in_reserved:
                 return candidate
         # Fallback: derive 9 digits from UUID hex
         digits = ''.join(ch for ch in uuid.uuid4().hex if ch.isdigit())

@@ -13,6 +13,12 @@ from django.core.exceptions import PermissionDenied
 from .services import load_photo_file
 
 
+class MyReservedInsureeIdsGQLType(graphene.ObjectType):
+    """Lightweight type to return reserved/used CHFIDs for current user context."""
+    reserved = graphene.List(graphene.String)
+    used = graphene.List(graphene.String)
+
+
 class GenderGQLType(DjangoObjectType):
     class Meta:
         model = Gender

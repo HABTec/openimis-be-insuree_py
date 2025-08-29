@@ -2,12 +2,24 @@ import logging
 from uuid import uuid4, UUID
 import pathlib
 import base64
+import json
 import graphene
 from insuree.apps import InsureeConfig
-from insuree.services import validate_insuree_number, InsureeService, FamilyService, InsureePolicyService
+from insuree.services import validate_insuree_number, InsureeService, FamilyService, InsureePolicyService, InsureeIdReservationService
 from django.conf import settings
 
-from core.schema import OpenIMISMutation
+from core.schema import (
+    OpenIMISMutation,
+    OpenIMISJSONEncoder,
+    signal_mutation,
+    signal_mutation_module_validate,
+    signal_mutation_module_before_mutating,
+    signal_mutation_module_after_mutating,
+)
+from core.models import MutationLog, Language
+from django.utils import translation
+from django.middleware.csrf import CsrfViewMiddleware
+from core.utils import is_this_session_superuser
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.utils.translation import gettext as _
@@ -66,6 +78,8 @@ class InsureeBase:
     chf_id_format = graphene.Int(required=False, description="1=region/district, 2=district, 3=none")
     add_on_existing_policy = graphene.Boolean(required=False)
     is_active = graphene.Boolean(required=False, description="Whether the insuree is active")
+    # If provided, the insuree will be created with this pre-reserved CHFID
+    reserved_chf_id = graphene.String(required=False, description="Use a pre-reserved CHFID for creation")
 
 
 class CreateInsureeInputType(InsureeBase, OpenIMISMutation.Input):
@@ -153,6 +167,227 @@ class CreateFamilyMutation(OpenIMISMutation):
             logger.exception("insuree.mutation.failed_to_create_family")
             return [{
                 'message': _("insuree.mutation.failed_to_create_family"),
+                'detail': str(exc)}
+            ]
+
+
+class ReserveInsureeIdsMutation(OpenIMISMutation):
+    """Reserve a batch of CHFIDs for the current user/officer and HF."""
+    _mutation_module = "insuree"
+    _mutation_class = "ReserveInsureeIdsMutation"
+
+    class Input(OpenIMISMutation.Input):
+        amount = graphene.Int(required=True)
+        autogenerate = graphene.Boolean(required=False)
+
+    reserved_chf_ids = graphene.List(graphene.String)
+
+    @classmethod
+    def async_mutate(cls, user, **data):
+        try:
+            if type(user) is AnonymousUser or not user.id:
+                raise ValidationError(_("mutation.authentication_required"))
+            # Reuse create permission for reserving IDs
+            if not user.has_perms(InsureeConfig.gql_mutation_create_insurees_perms):
+                raise PermissionDenied(_("unauthorized"))
+            amount = int(data.get('amount') or 0)
+            reserved = InsureeIdReservationService(user).reserve_new(amount)
+            # If client asks for autogenerate, return fields to surface in payload
+            # Otherwise, follow default contract and return None
+            logger.info("Reserved %s CHFIDs for user %s", len(reserved), getattr(user, 'username', None))
+            if data.get('autogenerate', False):
+                return { 'reserved_chf_ids': reserved }
+            return None
+        except Exception as exc:
+            logger.exception("insuree.mutation.failed_to_reserve_ids")
+            return [{
+                'message': _("insuree.mutation.failed_to_reserve_ids"),
+                'detail': str(exc)}
+            ]
+
+    @classmethod
+    def mutate_and_get_payload(cls, root, info, **data):
+        request = getattr(info, "context", None)
+
+        user_agent = request.headers.get("User-Agent", "")
+        current_session_key = request.session.session_key
+        if not is_this_session_superuser(current_session_key):
+            if not any(bypass in user_agent for bypass in getattr(settings, "USER_AGENT_CSRF_BYPASS", [])):
+                csrf_middleware = CsrfViewMiddleware(lambda req: None)
+                reason = csrf_middleware.process_view(request, None, (), {})
+                if reason:
+                    raise PermissionDenied("CSRF token missing or incorrect.")
+
+        mutation_log = MutationLog.objects.create(
+            json_content=json.dumps(data, cls=OpenIMISJSONEncoder),
+            user_id=info.context.user.id if info.context.user else None,
+            client_mutation_id=data.get("client_mutation_id"),
+            client_mutation_label=data.get("client_mutation_label"),
+            client_mutation_details=json.dumps(
+                data.get("client_mutation_details"), cls=OpenIMISJSONEncoder
+            )
+            if data.get("client_mutation_details")
+            else None,
+        )
+        logger.debug(
+            "OpenIMISMutation: saved as %s, type: %s, label: %s",
+            mutation_log.id,
+            cls.__name__,
+            mutation_log.client_mutation_label,
+        )
+        if (
+            info
+            and info.context
+            and info.context.user
+            and not info.context.user.is_anonymous
+        ):
+            lang = info.context.user.language
+            if isinstance(lang, Language):
+                translation.activate(lang.code)
+            else:
+                translation.activate(lang)
+
+        error_messages = None
+        generated_fields = {}
+        try:
+            logger.debug("[OpenIMISMutation %s] Sending signals", mutation_log.id)
+            results = signal_mutation.send(
+                sender=cls,
+                mutation_log_id=mutation_log.id,
+                data=data,
+                user=info.context.user,
+                mutation_module=cls._mutation_module,
+                mutation_class=cls.__name__,
+            )
+            results.extend(
+                signal_mutation_module_validate[cls._mutation_module].send(
+                    sender=cls,
+                    mutation_log_id=mutation_log.id,
+                    data=data,
+                    user=info.context.user,
+                    mutation_module=cls._mutation_module,
+                    mutation_class=cls.__name__,
+                )
+            )
+            errors = [err for r in results for err in r[1]]
+            logger.debug(
+                "[OpenIMISMutation %s] signals sent, got errors back: %d",
+                mutation_log.id,
+                len(errors),
+            )
+            if errors:
+                mutation_log.mark_as_failed(json.dumps(errors))
+                return cls(internal_id=mutation_log.id)
+
+            signal_mutation_module_before_mutating[cls._mutation_module].send(
+                sender=cls, mutation_log_id=mutation_log.id, data=data, user=info.context.user,
+                mutation_module=cls._mutation_module, mutation_class=cls.__name__
+            )
+            logger.debug("[OpenIMISMutation %s] before mutate signal sent", mutation_log.id)
+            # Only synchronous path considered here (mirrors core setting)
+            logger.debug("[OpenIMISMutation %s] mutating...", mutation_log.id)
+            try:
+                from core.schema import OpenIMISJSONEncoder as _Encoder
+                mutation_data = cls.coerce_mutation_data(json.loads(
+                    json.dumps(data, cls=_Encoder)))
+                mutation_data.pop("mutation_extensions", None)
+                messages = cls.async_mutate(
+                    info.context.user if info.context and info.context.user else None,
+                    **mutation_data)
+                if mutation_data.get('autogenerate', False) and isinstance(messages, dict):
+                    # capture generated fields for response
+                    generated_fields.update(messages)
+                    error_messages = None
+                else:
+                    error_messages = messages
+                if not error_messages:
+                    logger.debug("[OpenIMISMutation %s] marked as successful", mutation_log.id)
+                    mutation_log.mark_as_successful()
+                else:
+                    exceptions = [message.pop("exc") for message in error_messages if "exc" in message]
+                    errors_json = json.dumps(error_messages)
+                    logger.error("[OpenIMISMutation %s] marked as failed: %s", mutation_log.id, errors_json)
+                    for exc in exceptions:
+                        logger.error("[OpenIMISMutation %s] Exception:", mutation_log.id, exc_info=exc)
+                    mutation_log.mark_as_failed(errors_json)
+            except BaseException as exc:
+                error_messages = exc
+                logger.error("async_mutate threw an exception. It should have gotten this far.", exc_info=exc)
+                mutation_log.mark_as_failed(f"The mutation threw a {type(exc)}, check logs for details")
+            logger.debug("[OpenIMISMutation %s] send post mutation signal", mutation_log.id)
+            signal_mutation_module_after_mutating[cls._mutation_module].send(
+                sender=cls, mutation_log_id=mutation_log.id, data=data, user=info.context.user,
+                mutation_module=cls._mutation_module, mutation_class=cls.__name__,
+                error_messages=error_messages
+            )
+        except Exception as exc:
+            logger.error(f"Exception while processing mutation id {mutation_log.id}", exc_info=exc)
+            mutation_log.mark_as_failed(exc)
+
+        # Return instance including any generated fields so GraphQL can resolve them
+        instance = cls(internal_id=mutation_log.id)
+        if generated_fields.get('reserved_chf_ids') is not None:
+            setattr(instance, 'reserved_chf_ids', generated_fields.get('reserved_chf_ids'))
+        return instance
+
+
+class DeleteReservedInsureeIdsMutation(OpenIMISMutation):
+    """Cancel reservations for the given CHFIDs owned by current user scope."""
+    _mutation_module = "insuree"
+    _mutation_class = "DeleteReservedInsureeIdsMutation"
+
+    class Input(OpenIMISMutation.Input):
+        chf_ids = graphene.List(graphene.String, required=True)
+
+    deleted_count = graphene.Int()
+
+    @classmethod
+    def async_mutate(cls, user, **data):
+        try:
+            if type(user) is AnonymousUser or not user.id:
+                raise ValidationError(_("mutation.authentication_required"))
+            if not user.has_perms(InsureeConfig.gql_mutation_create_insurees_perms):
+                raise PermissionDenied(_("unauthorized"))
+            chf_ids = data.get('chf_ids') or []
+            deleted = InsureeIdReservationService(user).delete_reserved(chf_ids)
+            logger.info("Deleted %s reserved CHFIDs for user %s", deleted, getattr(user, 'username', None))
+            return None
+        except Exception as exc:
+            logger.exception("insuree.mutation.failed_to_delete_reserved_ids")
+            return [{
+                'message': _("insuree.mutation.failed_to_delete_reserved_ids"),
+                'detail': str(exc)}
+            ]
+
+
+class GetMyReservedInsureeIdsMutation(OpenIMISMutation):
+    """Return reserved and used CHFIDs under current user's HF/officer scope."""
+    _mutation_module = "insuree"
+    _mutation_class = "GetMyReservedInsureeIdsMutation"
+
+    class Input(OpenIMISMutation.Input):
+        pass
+
+    reserved = graphene.List(graphene.String)
+    used = graphene.List(graphene.String)
+
+    @classmethod
+    def async_mutate(cls, user, **data):
+        try:
+            if type(user) is AnonymousUser or not user.id:
+                raise ValidationError(_("mutation.authentication_required"))
+            if not user.has_perms(InsureeConfig.gql_mutation_create_insurees_perms):
+                raise PermissionDenied(_("unauthorized"))
+            qs = InsureeIdReservationService(user).get_my()
+            reserved = list(qs.filter(status="RS").values_list('chf_id', flat=True))
+            used = list(qs.filter(status="US").values_list('chf_id', flat=True))
+            # Success: return None, consumers should use dedicated query resolvers instead
+            logger.info("Fetched reserved (%s) and used (%s) CHFIDs for user %s", len(reserved), len(used), getattr(user, 'username', None))
+            return None
+        except Exception as exc:
+            logger.exception("insuree.mutation.failed_to_get_reserved_ids")
+            return [{
+                'message': _("insuree.mutation.failed_to_get_reserved_ids"),
                 'detail': str(exc)}
             ]
 
@@ -309,6 +544,28 @@ class CreateInsureeMutation(OpenIMISMutation):
             InsureeMutation.object_mutated(
                 mutation_user, client_mutation_id=client_mutation_id, insuree=insuree)
             return None
+        except ValidationError as exc:
+            # Surface specific reserved CHFID errors clearly to the client
+            details = getattr(exc, 'messages', None)
+            detail_text = "; ".join(details) if details else str(exc)
+            if 'reserved_id_already_used' in detail_text:
+                return [{
+                    'message': _("reserved_id_already_used")
+                }]
+            if 'reserved_id_not_available' in detail_text:
+                return [{
+                    'message': _("reserved_id_not_available")
+                }]
+            if 'reserved_id_wrong_scope' in detail_text:
+                return [{
+                    'message': _("reserved_id_wrong_scope")
+                }]
+            # Fallback to generic failure with details
+            logger.exception("insuree.mutation.failed_to_create_insuree")
+            return [{
+                'message': _("insuree.mutation.failed_to_create_insuree"),
+                'detail': detail_text}
+            ]
         except Exception as exc:
             logger.exception("insuree.mutation.failed_to_create_insuree")
             return [{
