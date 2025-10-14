@@ -142,8 +142,12 @@ class Family(core_models.VersionedModel, core_models.ExtendableModel):
             )
         if settings.ROW_SECURITY and not user.is_imis_admin and not InsureeConfig.no_location_check:
             from location.schema import LocationManager
-            return queryset.filter(
-                LocationManager().build_user_location_filter_query(user._u, prefix='location__parent__parent', loc_types=['D']))
+            from location.models import extend_allowed_locations
+            # Filter families by officer's assigned location
+            # Use non-strict mode to include both children AND parent locations
+            allowed_location_ids = LocationManager().get_allowed_ids(user._u)
+            extended_locations = extend_allowed_locations(allowed_location_ids, strict=False)
+            return queryset.filter(Q(location_id__in=extended_locations) | Q(location__isnull=True))
 
         return queryset
 
