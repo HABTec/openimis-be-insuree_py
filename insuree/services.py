@@ -772,6 +772,39 @@ class InsureeService:
                 continue
             setattr(insuree, key, value)
         return insuree
+    
+    def remove(self, insuree):
+        try:
+            insuree.save_history()
+            insuree.family = None
+            insuree.save()
+            return []
+        except Exception as exc:
+            logger.exception("insuree.mutation.failed_to_remove_insuree")
+            return {
+                'title': insuree.chf_id,
+                'list': [{
+                    'message': _("insuree.mutation.failed_to_remove_insuree") % {'chfid': insuree.chfid},
+                    'detail': insuree.uuid}]
+            }
+    
+     
+    @register_service_signal('insuree_service.delete')
+    def set_deleted(self, insuree):
+        try:
+            insuree.delete_history()
+            [ip.delete_history()
+             for ip in insuree.insuree_policies.filter(validity_to__isnull=True)]
+            return []
+        except Exception as exc:
+            logger.exception("insuree.mutation.failed_to_delete_insuree")
+            return {
+                'title': insuree.chf_id,
+                'list': [{
+                    'message': _("insuree.mutation.failed_to_delete_insuree") % {'chfid': insuree.chf_id},
+                    'detail': insuree.uuid}]
+            }
+
 
 class InsureePolicyService:
     def __init__(self, user):
