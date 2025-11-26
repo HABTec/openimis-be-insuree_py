@@ -118,6 +118,11 @@ class FamilyInputType(FamilyBase, OpenIMISMutation.Input):
 
 class CreateFamilyInputType(FamilyInputType):
     pass
+class CheckInBase:
+    uuid = graphene.String(required=True, read_only=True)
+
+class InsureeCheckInInputType(CheckInBase , OpenIMISMutation.Input):
+    pass
 
 
 class UpdateFamilyInputType(FamilyInputType):
@@ -167,6 +172,38 @@ class CreateFamilyMutation(OpenIMISMutation):
             logger.exception("insuree.mutation.failed_to_create_family")
             return [{
                 'message': _("insuree.mutation.failed_to_create_family"),
+                'detail': str(exc)}
+            ]
+class InsureeCheckInMutation(OpenIMISMutation):
+    """
+    Check in an insuree
+    """
+    _mutation_module = "insuree"
+    _mutation_class = "InsureeCheckInMutation"
+
+    class Input(InsureeCheckInInputType):
+        pass
+
+    @classmethod
+    def async_mutate(cls, user, **data):
+        try:
+            if type(user) is AnonymousUser or not user.id:
+                raise ValidationError(
+                    _("mutation.authentication_required"))
+            if not user.has_perms(InsureeConfig.gql_mutation_checkin_insuree_perms):
+                raise PermissionDenied(_("unauthorized"))
+            if user.health_facility is None:
+                raise ValidationError(
+                    "Receptionist accounts must be assigned to a Health Facility before they can perform insuree check-ins..")
+            client_mutation_id = data.get("client_mutation_id")
+            InsureeService(user).checkin_insuree(data)
+            InsureeMutation.object_mutated(
+                user, client_mutation_id=client_mutation_id)
+            return None
+        except Exception as exc:
+            logger.exception("insuree.mutation.failed_to_create_family")
+            return [{
+                'message': "Failed to check in insuree",
                 'detail': str(exc)}
             ]
 

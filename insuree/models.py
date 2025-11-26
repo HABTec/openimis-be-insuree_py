@@ -12,7 +12,7 @@ from location import models as location_models
 from location.models import LocationManager
 from product.models import MembershipType
 from core import datetime
-
+from location.models import HealthFacility
 
 class Gender(models.Model):
     code = models.CharField(db_column='Code', primary_key=True, max_length=1)
@@ -498,3 +498,30 @@ class InsureeIdReservation(core_models.VersionedModel):
     class Meta:
         managed = True
         db_table = 'insuree_IdReservation'
+
+
+class InsureeCheckIn(models.Model):
+
+    id = models.AutoField(db_column='InsureeCheckInID', primary_key=True)
+    insuree = models.ForeignKey(
+        Insuree,
+        models.DO_NOTHING,
+        db_column='InsureeID',
+        related_name='checkins',
+    )
+    health_facility = models.ForeignKey(
+        HealthFacility,
+        models.DO_NOTHING,
+        db_column='HFID',
+        related_name='insuree_checkins',
+    )
+    check_in_date = models.DateTimeField(
+        db_column='CheckInDate',
+        blank=True,
+        null=True,
+    )
+    audit_user_id = models.IntegerField(db_column='AuditUserID', blank=True, null=True)
+
+    class Meta:
+        managed = True
+        db_table = 'tblInsureeCheckIn'

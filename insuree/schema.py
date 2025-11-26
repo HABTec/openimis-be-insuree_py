@@ -8,7 +8,7 @@ from core.schema import signal_mutation_module_validate
 from core.services import wait_for_mutation
 from core.utils import filter_validity
 from django.db.models import Q
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.dispatch import Signal
 from graphene_django.filter import DjangoFilterConnectionField
 import graphene_django_optimizer as gql_optimizer
@@ -81,6 +81,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         client_mutation_id=graphene.String(),
         ignore_location=graphene.Boolean(),
         orderBy=graphene.List(of_type=graphene.String),
+        is_checked_in=graphene.Boolean(),
         additional_filters=graphene.JSONString()
     )
     identification_types = graphene.List(IdentificationTypeGQLType)
@@ -189,6 +190,19 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             )
             filters.extend(filters_from_signal)
         show_history = kwargs.get('show_history', False)
+        check_in = kwargs.get('is_checked_in', False)
+        if check_in:
+            if not info.context.user.has_perms(InsureeConfig.gql_query_checkedin_insurees_perms):
+                raise PermissionDenied(_("unauthorized"))
+            if info.context.user.health_facility is None:
+                raise ValidationError(
+                    "Receptionist accounts must be assigned to a Health Facility to fetch check in users")
+            from django.utils import timezone
+            from datetime import timedelta
+            now = timezone.now()
+            last_24_hours = now - timedelta(hours=24)
+            filters.append(Q(checkins__check_in_date__gte=last_24_hours))
+            filters.append(Q(checkins__health_facility=info.context.user.health_facility))
         if not show_history and not kwargs.get('uuid', None):
             filters += filter_validity(**kwargs)
         client_mutation_id = kwargs.get("client_mutation_id", None)
@@ -215,7 +229,10 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             filters += [Q(LocationManager().build_user_location_filter_query(info.context.user._u, prefix='current_village__parent__parent', loc_types=['D']) |
                         LocationManager().build_user_location_filter_query(info.context.user._u, prefix='family__location__parent__parent', loc_types=['D']))]
 
-        return gql_optimizer.query(Insuree.objects.filter(*filters).all(), info)
+        queryset = Insuree.objects.filter(*filters)
+        if check_in:
+            queryset = queryset.distinct()
+        return gql_optimizer.query(queryset.all(), info)
 
     def resolve_family_members(self, info, **kwargs):
         if not info.context.user.has_perms(InsureeConfig.gql_query_insuree_family_members):
@@ -349,6 +366,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
 class Mutation(graphene.ObjectType):
     create_family = CreateFamilyMutation.Field()
+    insuree_check_in = InsureeCheckInMutation.Field()
     update_family = UpdateFamilyMutation.Field()
     delete_families = DeleteFamiliesMutation.Field()
     create_insuree = CreateInsureeMutation.Field()
