@@ -13,7 +13,7 @@ from django.utils.translation import gettext as _
 from core.signals import register_service_signal
 from insuree.apps import InsureeConfig
 from insuree.models import (InsureePhoto, PolicyRenewalDetail, Insuree, Family, InsureePolicy, InsureeStatus,
-                            InsureeStatusReason, InsureeIdReservation, ReservationStatus)
+                            InsureeStatusReason, InsureeIdReservation, ReservationStatus, InsureeCheckIn)
 from django.core.exceptions import ValidationError
 from core.models import filter_validity, resolved_id_reference
 from django.db import transaction
@@ -804,7 +804,33 @@ class InsureeService:
                     'message': _("insuree.mutation.failed_to_delete_insuree") % {'chfid': insuree.chf_id},
                     'detail': insuree.uuid}]
             }
+    def checkin_insuree(self, data):
+        from core import datetime
+        now = datetime.datetime.now()
+        try:
+            insuree = Insuree.objects.filter(uuid=data["uuid"], *filter_validity()).first()
+        except Exception as e:
+            logger.warning(f"UUID lookup failed for {data.get('uuid')}: {e}")
+            insuree = None
 
+        if not insuree:
+            raise ValidationError(_("insuree.validation.id_does_not_exist"))
+
+        health_facility = getattr(self.user, 'health_facility', None)
+        if health_facility is None:
+            raise ValidationError(
+                _("Receptionist accounts must be assigned to a Health Facility before they can perform insuree check-ins.")
+            )
+
+        audit_user_id = getattr(self.user, 'id_for_audit', 0)
+        InsureeCheckIn.objects.create(
+            insuree=insuree,
+            health_facility=health_facility,
+            check_in_date=now,
+            audit_user_id=audit_user_id
+        )
+
+        return insuree
 
 class InsureePolicyService:
     def __init__(self, user):
