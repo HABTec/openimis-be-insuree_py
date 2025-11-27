@@ -7,7 +7,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('location', '0024_merge_20251031_1301'),
+        ('location', '0023_remove_healthfacilitycontract_uq_hf_loc_contract_valid_and_more'),
         ('insuree', '0031_insureeidreservation_audit_user_id'),
     ]
 
