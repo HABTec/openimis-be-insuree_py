@@ -17,6 +17,7 @@ DEFAULT_CFG = {
     "gql_query_insuree_policy_perms": ["101500"],
     "gql_mutation_create_families_perms": ["101002"],
     "gql_mutation_checkin_insuree_perms" : ["101105"],
+    "gql_mutation_delete_checkin_insuree_perms" : ["101105"],
     "gql_mutation_update_families_perms": ["101003"],
     "gql_mutation_delete_families_perms": ["101004"],
     "gql_mutation_create_insurees_perms": ["101102"],
@@ -64,6 +65,7 @@ class InsureeConfig(AppConfig):
     gql_mutation_create_insurees_perms = []
     gql_mutation_update_insurees_perms = []
     gql_mutation_delete_insurees_perms = []
+    gql_mutation_delete_checkin_insuree_perms = [],
     validation_code_taken_insuree_number = None
     validation_code_no_insuree_number = None
     validation_code_invalid_insuree_number_len = None
