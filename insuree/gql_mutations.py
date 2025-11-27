@@ -190,11 +190,11 @@ class InsureeCheckInMutation(OpenIMISMutation):
             if type(user) is AnonymousUser or not user.id:
                 raise ValidationError(
                     _("mutation.authentication_required"))
-            # if not user.has_perms(InsureeConfig.gql_mutation_checkin_insuree_perms):
-            #     raise PermissionDenied(_("unauthorized"))
-            # if user.health_facility is None:
-            #     raise ValidationError(
-            #         "Receptionist accounts must be assigned to a Health Facility before they can perform insuree check-ins..")
+            if not user.has_perms(InsureeConfig.gql_mutation_checkin_insuree_perms):
+                raise PermissionDenied(_("unauthorized"))
+            if user.health_facility is None:
+                raise ValidationError(
+                    "Receptionist accounts must be assigned to a Health Facility before they can perform insuree check-ins..")
             client_mutation_id = data.get("client_mutation_id")
             InsureeService(user).checkin_insuree(data)
             InsureeMutation.object_mutated(
