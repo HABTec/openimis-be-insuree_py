@@ -379,6 +379,7 @@ class Mutation(graphene.ObjectType):
     reserve_insuree_ids = ReserveInsureeIdsMutation.Field()
     delete_reserved_insuree_ids = DeleteReservedInsureeIdsMutation.Field()
     get_my_reserved_insuree_ids = GetMyReservedInsureeIdsMutation.Field()
+    delete_insuree_checkin = DeleteInsureeCheckInMutation.Field()
 
 
 def on_family_mutation(kwargs, k='uuid'):

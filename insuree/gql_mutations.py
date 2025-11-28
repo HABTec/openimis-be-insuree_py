@@ -24,7 +24,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.utils.translation import gettext as _
 from graphene import InputObjectType
-from .models import Family, Insuree, FamilyMutation, InsureeMutation, DisabilityStatus
+from .models import Family, Insuree, FamilyMutation, InsureeMutation, DisabilityStatus, InsureeCheckIn
 
 logger = logging.getLogger(__name__)
 
@@ -812,6 +812,33 @@ class ChangeInsureeFamilyMutation(OpenIMISMutation):
             # Assign all the valid policies from the new family
             InsureePolicyService(user).add_insuree_policy(insuree)
 
+            return None
+        except Exception as exc:
+            logger.exception(
+                "insuree.mutation.failed_to_change_insuree_family")
+            return [{
+                'message': _("insuree.mutation.failed_to_change_insuree_family"),
+                'detail': str(exc)}
+            ]
+
+class DeleteInsureeCheckInMutation(OpenIMISMutation):
+    """
+    delete insuree from checkin list
+    """
+    _mutation_module = "insuree"
+    _mutation_class = "DeleteInsureeCheckInMutation"
+
+    class Input(OpenIMISMutation.Input):
+        insuree_uuid = graphene.String()
+
+    @classmethod
+    def async_mutate(cls, user, **data):
+        if not user.has_perms(InsureeConfig.gql_mutation_delete_checkin_insuree_perms):
+            raise PermissionDenied(_("unauthorized"))
+        try:
+            insuree = Insuree.objects.get(uuid=(data['insuree_uuid']))
+            checkindata = InsureeCheckIn.objects.filter(insuree=insuree).order_by('-check_in_date').first()
+            checkindata.delete()
             return None
         except Exception as exc:
             logger.exception(
