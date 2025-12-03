@@ -854,8 +854,8 @@ class DeleteInsureeCheckInMutation(OpenIMISMutation):
                 checkindata.delete()
             return None
         except Exception as exc:
-            logger.exception("insuree.mutation.failed_to_change_insuree_family")
+            logger.exception("insuree.mutation.failed_to_delete_checkin")
             return [{
-                'message': _("insuree.mutation.failed_to_change_insuree_family"),
+                'message': _("insuree.mutation.failed_to_delete_checkin"),
                 'detail': str(exc)
             }]
