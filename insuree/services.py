@@ -806,7 +806,9 @@ class InsureeService:
             }
     def checkin_insuree(self, data):
         from core import datetime
-        now = datetime.datetime.now()
+        from datetime import timedelta
+        from django.utils import timezone
+        now = timezone.now()
         try:
             insuree = Insuree.objects.filter(uuid=data["uuid"], *filter_validity()).first()
         except Exception as e:
@@ -821,7 +823,15 @@ class InsureeService:
             raise ValidationError(
                 _("Receptionist accounts must be assigned to a Health Facility before they can perform insuree check-ins.")
             )
-
+        
+        last_24_hours = now - timedelta(hours=24)
+        already_checked_in = InsureeCheckIn.objects.filter(
+            insuree=insuree,
+            check_in_date__gte=last_24_hours
+        ).exists()
+        if already_checked_in:
+            raise ValidationError(_("This insuree has already been checked in within the last 24 hours."))
+        
         audit_user_id = getattr(self.user, 'id_for_audit', 0)
         InsureeCheckIn.objects.create(
             insuree=insuree,

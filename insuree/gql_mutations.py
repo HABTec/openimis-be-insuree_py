@@ -823,7 +823,7 @@ class ChangeInsureeFamilyMutation(OpenIMISMutation):
 
 class DeleteInsureeCheckInMutation(OpenIMISMutation):
     """
-    delete insuree from checkin list
+    Delete insuree from check-in list (only last 24 hours)
     """
     _mutation_module = "insuree"
     _mutation_class = "DeleteInsureeCheckInMutation"
@@ -836,14 +836,26 @@ class DeleteInsureeCheckInMutation(OpenIMISMutation):
         if not user.has_perms(InsureeConfig.gql_mutation_delete_checkin_insuree_perms):
             raise PermissionDenied(_("unauthorized"))
         try:
-            insuree = Insuree.objects.get(uuid=(data['insuree_uuid']))
-            checkindata = InsureeCheckIn.objects.filter(insuree=insuree).order_by('-check_in_date').first()
-            checkindata.delete()
+            insuree = Insuree.objects.get(uuid=data['insuree_uuid'])
+            from django.utils import timezone
+            from datetime import timedelta
+            now = timezone.now()
+            last_24_hours = now - timedelta(hours=24)
+            checkindata = (
+                InsureeCheckIn.objects
+                .filter(
+                    insuree=insuree,
+                    check_in_date__gte=last_24_hours
+                )
+                .order_by('-check_in_date')
+                .first()
+            )
+            if checkindata:
+                checkindata.delete()
             return None
         except Exception as exc:
-            logger.exception(
-                "insuree.mutation.failed_to_change_insuree_family")
+            logger.exception("insuree.mutation.failed_to_delete_checkin")
             return [{
-                'message': _("insuree.mutation.failed_to_change_insuree_family"),
-                'detail': str(exc)}
-            ]
+                'message': _("insuree.mutation.failed_to_delete_checkin"),
+                'detail': str(exc)
+            }]
