@@ -97,7 +97,7 @@ class FamilyHeadInsureeInputType(InsureeBase, InputObjectType):
 class FamilyBase:
     id = graphene.Int(required=False, read_only=True)
     uuid = graphene.String(required=False)
-    location_id = graphene.Int(required=False)
+    location_id = graphene.Int()
     poverty = graphene.Boolean(required=False)
     family_type_id = graphene.String(max_length=1, required=False)
     address = graphene.String(max_length=200, required=False)
@@ -838,7 +838,8 @@ class DeleteInsureeCheckInMutation(OpenIMISMutation):
         try:
             insuree = Insuree.objects.get(uuid=(data['insuree_uuid']))
             checkindata = InsureeCheckIn.objects.filter(insuree=insuree).order_by('-check_in_date').first()
-            checkindata.delete()
+            checkindata.is_deleted = True
+            checkindata.save()
             return None
         except Exception as exc:
             logger.exception(
