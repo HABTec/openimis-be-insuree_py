@@ -863,6 +863,7 @@ class FamilyService:
         head_insuree_data = data.pop('head_insuree', None)
         
         if head_insuree_data:
+            head_insuree_data.pop('disability_status', None)
             head_insuree_data["head"] = True
             head_insuree = InsureeService(
                 self.user).create_or_update(head_insuree_data)
