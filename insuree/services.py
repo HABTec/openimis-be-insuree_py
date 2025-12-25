@@ -462,12 +462,13 @@ class InsureeService:
         
         # Observe is_active but don't remove it from data; let update apply it directly
         # Avoid mapping is_active to status to keep them independent for now
-        is_active = data.get('is_active', None)
+        is_active = True
+        data['is_active'] = True
+        status = data.get('status')
+        if status is None:
+            data['status'] = InsureeStatus.ACTIVE
         # If caller explicitly sets is_active, align status accordingly before saving
-        if is_active is not None:
-            data['is_active'] = is_active
-            data['status'] = InsureeStatus.INACTIVE if is_active is False else InsureeStatus.ACTIVE
-        
+
         # Basic validation
         from core import datetime
         # Derive a safe audit user id (supports DEBUG anonymous calls)
@@ -485,9 +486,7 @@ class InsureeService:
         
         # Validate status
         status = data.get('status', InsureeStatus.ACTIVE)
-        if status not in [choice[0] for choice in InsureeStatus.choices]:
-            raise ValidationError(_("mutation.insuree.wrong_status"))
-            
+
         # Deprecated: CHF ID format validation removed (we always generate 9-digit IDs)
             
         # Find existing insuree if updating (uuid indicates update intent)
@@ -517,42 +516,7 @@ class InsureeService:
             if (creating or missing_existing_photo) and photo_data is None:
                 raise ValidationError(_("mutation.insuree.no_required_photo"))
 
-        # Handle status-specific validation and actions
-        if status in [InsureeStatus.INACTIVE, InsureeStatus.DEAD]:
-            # When toggling via is_active, status_reason is optional; only set it if a valid code/object is provided
-            if is_active is False:
-                sr_code = data.get('status_reason', None)
-                if sr_code:
-                    try:
-                        status_reason = InsureeStatusReason.objects.get(
-                            code=sr_code,
-                            validity_to__isnull=True
-                        )
-                        if status_reason.status_type != status:
-                            raise ValidationError(_("mutation.insuree.wrong_status"))
-                        data['status_reason'] = status_reason
-                    except InsureeStatusReason.DoesNotExist:
-                        raise ValidationError(_("mutation.insuree.wrong_status"))
-                else:
-                    # Ensure we don't accidentally assign a non-model object; leave unset if none provided
-                    data.pop('status_reason', None)
-            else:
-                # For normal status changes (not via isActive), use the standard validation
-                try:
-                    status_reason = InsureeStatusReason.objects.get(
-                        code=data.get('status_reason', None),
-                        validity_to__isnull=True
-                    )
-                    if status_reason is None or status_reason.status_type != status:
-                        raise ValidationError(_("mutation.insuree.wrong_status"))
-                    data['status_reason'] = status_reason
-                except InsureeStatusReason.DoesNotExist:
-                    raise ValidationError(_("mutation.insuree.wrong_status"))
-            
-            # Disable policies if needed
-            if insuree:
-                self.disable_policies_of_insuree(insuree=insuree, status_date=data.get('status_date', now.date()))
-                
+        
         # Validate health facility requirement
         if InsureeConfig.insuree_fsp_mandatory and 'health_facility_id' not in data:
             raise ValidationError("mutation.insuree.fsp_required")
@@ -594,14 +558,10 @@ class InsureeService:
             force_in_place = bool(is_active is not None) or bool(no_versioning)
             if force_in_place:
                 # Update the current row in place, without saving history/new version
-                self._update(insuree, data, in_place=True)
+                insuree = self._update(insuree, data, in_place=True)
             else:
-                self._update(insuree, data)
-        # Critically, if is_active was explicitly provided, set it (and status) on the instance
-        # BEFORE saving, so it persists on the new/current row regardless of versioning.
-        if is_active is not None:
-            insuree.is_active = is_active
-            insuree.status = InsureeStatus.INACTIVE if is_active is False else InsureeStatus.ACTIVE
+                insuree = self._update(insuree, data)
+        
         insuree.save()
         insuree.refresh_from_db()
 
@@ -622,98 +582,7 @@ class InsureeService:
 
         # Apply explicit is_active toggle if it was provided in the payload.
         # Apply it reliably by targeting the most recent row for this UUID, in case versioning changed the PK.
-        try:
-            if is_active is not None:
-                target_status = InsureeStatus.INACTIVE if is_active is False else InsureeStatus.ACTIVE
-                total_updated = 0
-                # Identify the latest row by uuid (accounts for versioning creating a new row)
-                try:
-                    latest_id = (
-                        Insuree.objects
-                        .filter(uuid=insuree.uuid)
-                        .order_by('-validity_from')
-                        .values_list('id', flat=True)
-                        .first()
-                    )
-                except Exception:
-                    latest_id = None
-                if latest_id:
-                    updated = Insuree.objects.filter(id=latest_id).update(
-                        is_active=is_active, status=target_status, audit_user_id=audit_id
-                    )
-                    total_updated += updated
-                    if updated:
-                        logger.info("Applied is_active by latest uuid row: uuid=%s id=%s updated=%s", insuree.uuid, latest_id, updated)
-                # 1) Try by primary key (most reliable)
-                try:
-                    updated = Insuree.objects.filter(id=insuree.id, validity_to__isnull=True).update(
-                        is_active=is_active, status=target_status, audit_user_id=audit_id
-                    )
-                    total_updated += updated
-                    if updated:
-                        logger.info("Applied is_active by id: id=%s, updated=%s", insuree.id, updated)
-                except Exception as ie:
-                    logger.warning("Failed is_active update by id=%s: %s", getattr(insuree, 'id', None), ie)
-
-                # 2) If nothing updated, try by uuid (in case id changed due to versioning policy)
-                if total_updated == 0 and getattr(insuree, 'uuid', None):
-                    try:
-                        updated = Insuree.objects.filter(uuid=insuree.uuid, validity_to__isnull=True).update(
-                            is_active=is_active, status=target_status, audit_user_id=audit_id
-                        )
-                        total_updated += updated
-                        if updated:
-                            logger.info("Applied is_active by uuid: uuid=%s, updated=%s", insuree.uuid, updated)
-                    except Exception as ue:
-                        logger.warning("Failed is_active update by uuid=%s: %s", getattr(insuree, 'uuid', None), ue)
-
-                # 3) As a last resort, try by chf_id
-                if total_updated == 0 and getattr(insuree, 'chf_id', None):
-                    try:
-                        updated = Insuree.objects.filter(chf_id=insuree.chf_id, validity_to__isnull=True).update(
-                            is_active=is_active, status=target_status, audit_user_id=audit_id
-                        )
-                        total_updated += updated
-                        if updated:
-                            logger.info("Applied is_active by chf_id: chf_id=%s, updated=%s", insuree.chf_id, updated)
-                    except Exception as ce:
-                        logger.warning("Failed is_active update by chf_id=%s: %s", getattr(insuree, 'chf_id', None), ce)
-
-                if total_updated == 0:
-                    logger.warning("Could not locate any current row to apply is_active. id=%s uuid=%s chf_id=%s",
-                                   getattr(insuree, 'id', None), getattr(insuree, 'uuid', None), getattr(insuree, 'chf_id', None))
-                    # As a last-chance attempt, try updating without the validity_to filter.
-                    try:
-                        updated = Insuree.objects.filter(id=insuree.id).update(
-                            is_active=is_active, status=target_status, audit_user_id=audit_id
-                        )
-                        total_updated += updated
-                        if updated:
-                            logger.info("Applied is_active by id without validity filter: id=%s, updated=%s", insuree.id, updated)
-                        if total_updated == 0 and getattr(insuree, 'uuid', None):
-                            updated = Insuree.objects.filter(uuid=insuree.uuid).update(
-                                is_active=is_active, status=target_status, audit_user_id=audit_id
-                            )
-                            total_updated += updated
-                            if updated:
-                                logger.info("Applied is_active by uuid without validity filter: uuid=%s, updated=%s", insuree.uuid, updated)
-                        if total_updated == 0 and getattr(insuree, 'chf_id', None):
-                            updated = Insuree.objects.filter(chf_id=insuree.chf_id).update(
-                                is_active=is_active, status=target_status, audit_user_id=audit_id
-                            )
-                            total_updated += updated
-                            if updated:
-                                logger.info("Applied is_active by chf_id without validity filter: chf_id=%s, updated=%s", insuree.chf_id, updated)
-                    except Exception as fe:
-                        logger.warning("Failed last-chance is_active update without validity filter for id=%s: %s", getattr(insuree, 'id', None), fe)
-                if total_updated > 0:
-                    try:
-                        insuree.refresh_from_db()
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.error("Failed to apply is_active=%s for insuree %s: %s", is_active, getattr(insuree, 'id', None), e)
-
+        
         # Activate policies if requested
         if add_on_existing_policy:
             self.activate_policies_of_insuree(insuree=insuree)
@@ -758,9 +627,9 @@ class InsureeService:
         except Exception as e:
             logger.error("activate_policies_of_insuree error: %s", e)
 
-    def _update(self, insuree, data, in_place=False):
+    def  _update(self, insuree, data, in_place=True):
+        h_id = insuree.save_history()
         if not in_place:
-            insuree.save_history()
             # reset the non required fields
             # (each update is 'complete', necessary to be able to set 'null')
             reset_insuree_before_update(insuree)
