@@ -203,6 +203,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             last_24_hours = now - timedelta(hours=24)
             filters.append(Q(checkins__check_in_date__gte=last_24_hours))
             filters.append(Q(checkins__health_facility=info.context.user.health_facility))
+            filters.append(Q(checkins__is_deleted=False))
         if not show_history and not kwargs.get('uuid', None):
             filters += filter_validity(**kwargs)
         client_mutation_id = kwargs.get("client_mutation_id", None)
@@ -226,8 +227,8 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         if not info.context.user._u.is_imis_admin and (kwargs.get('ignore_location') == False or kwargs.get('ignore_location') is None) and not InsureeConfig.no_location_check:
             # Limit the list by the logged in user location mapping
-            filters += [Q(LocationManager().build_user_location_filter_query(info.context.user._u, prefix='current_village__parent__parent', loc_types=['D']) |
-                        LocationManager().build_user_location_filter_query(info.context.user._u, prefix='family__location__parent__parent', loc_types=['D']))]
+            filters += [Q(LocationManager().build_user_location_filter_query(info.context.user._u, prefix='current_village', loc_types=['V']) |
+                        LocationManager().build_user_location_filter_query(info.context.user._u, prefix='family__location', loc_types=['V']))]
 
         queryset = Insuree.objects.filter(*filters)
         if check_in:
@@ -318,7 +319,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         # Limit the list by the logged in user location mapping
         if not info.context.user._u.is_imis_admin and not InsureeConfig.no_location_check:
             filters += [LocationManager().build_user_location_filter_query(info.context.user._u,
-                                                                           prefix='location__parent__parent', loc_types=['D'])]
+                                                                           prefix='location', loc_types=['V'] ,locids= True)]
 
         # Duplicates cannot be removed with distinct, as TEXT field is not comparable
         ids = Family.objects.filter(*filters).values_list('id')

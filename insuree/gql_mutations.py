@@ -838,7 +838,8 @@ class DeleteInsureeCheckInMutation(OpenIMISMutation):
         try:
             insuree = Insuree.objects.get(uuid=(data['insuree_uuid']))
             checkindata = InsureeCheckIn.objects.filter(insuree=insuree).order_by('-check_in_date').first()
-            checkindata.delete()
+            checkindata.is_deleted = True
+            checkindata.save()
             return None
         except Exception as exc:
             logger.exception(

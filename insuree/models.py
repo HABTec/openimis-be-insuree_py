@@ -517,6 +517,7 @@ class InsureeCheckIn(models.Model):
         null=True,
     )
     audit_user_id = models.IntegerField(db_column='AuditUserID', blank=True, null=True)
+    is_deleted = models.BooleanField(db_column='IsDeleted', default=False)
 
     class Meta:
         managed = True
