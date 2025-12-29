@@ -495,6 +495,10 @@ class InsureeIdReservation(core_models.VersionedModel):
         managed = True
         db_table = 'insuree_IdReservation'
 
+class ActiveCheckInManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
 
 class InsureeCheckIn(models.Model):
 
@@ -518,6 +522,9 @@ class InsureeCheckIn(models.Model):
     )
     audit_user_id = models.IntegerField(db_column='AuditUserID', blank=True, null=True)
     is_deleted = models.BooleanField(db_column='IsDeleted', default=False)
+
+    objects = models.Manager
+    active = ActiveCheckInManager
 
     class Meta:
         managed = True

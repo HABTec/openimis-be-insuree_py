@@ -837,7 +837,13 @@ class DeleteInsureeCheckInMutation(OpenIMISMutation):
             raise PermissionDenied(_("unauthorized"))
         try:
             insuree = Insuree.objects.get(uuid=(data['insuree_uuid']))
-            checkindata = InsureeCheckIn.objects.filter(insuree=insuree).order_by('-check_in_date').first()
+            checkindata = InsureeCheckIn.active.filter(insuree=insuree).order_by('-check_in_date').first()
+            checkindata = InsureeCheckIn.active.filter(insuree=insuree).order_by('-check_in_date').first()
+            if not checkindata:
+                return [{
+                    'message': _("No active check-in found for this insuree."),
+                    'detail': f"Insuree {insuree.uuid} has no active check-ins."
+                }]
             checkindata.is_deleted = True
             checkindata.save()
             return None
