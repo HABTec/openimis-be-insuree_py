@@ -823,7 +823,7 @@ class ChangeInsureeFamilyMutation(OpenIMISMutation):
 
 class DeleteInsureeCheckInMutation(OpenIMISMutation):
     """
-    delete insuree from checkin list
+    Delete insuree from check-in list
     """
     _mutation_module = "insuree"
     _mutation_class = "DeleteInsureeCheckInMutation"
@@ -838,7 +838,6 @@ class DeleteInsureeCheckInMutation(OpenIMISMutation):
         try:
             insuree = Insuree.objects.get(uuid=(data['insuree_uuid']))
             checkindata = InsureeCheckIn.active.filter(insuree=insuree).order_by('-check_in_date').first()
-            checkindata = InsureeCheckIn.active.filter(insuree=insuree).order_by('-check_in_date').first()
             if not checkindata:
                 return [{
                     'message': _("No active check-in found for this insuree."),
@@ -848,9 +847,8 @@ class DeleteInsureeCheckInMutation(OpenIMISMutation):
             checkindata.save()
             return None
         except Exception as exc:
-            logger.exception(
-                "insuree.mutation.failed_to_change_insuree_family")
+            logger.exception("insuree.mutation.failed_to_delete_checkin")
             return [{
-                'message': _("insuree.mutation.failed_to_change_insuree_family"),
-                'detail': str(exc)}
-            ]
+                'message': _("insuree.mutation.failed_to_delete_checkin"),
+                'detail': str(exc)
+            }]

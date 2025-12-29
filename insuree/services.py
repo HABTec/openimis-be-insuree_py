@@ -675,7 +675,9 @@ class InsureeService:
             }
     def checkin_insuree(self, data):
         from core import datetime
-        now = datetime.datetime.now()
+        from datetime import timedelta
+        from django.utils import timezone
+        now = timezone.now()
         try:
             insuree = Insuree.objects.filter(uuid=data["uuid"], *filter_validity()).first()
         except Exception as e:

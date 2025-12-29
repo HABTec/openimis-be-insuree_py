@@ -317,9 +317,12 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             filters += [Q(**{f: parent_location})]
 
         # Limit the list by the logged in user location mapping
+        # Filter families by officer's assigned location (includes parent and child locations)
         if not info.context.user._u.is_imis_admin and not InsureeConfig.no_location_check:
-            filters += [LocationManager().build_user_location_filter_query(info.context.user._u,
-                                                                           prefix='location', loc_types=['V'] ,locids= True)]
+            from location.models import extend_allowed_locations
+            allowed_location_ids = LocationManager().get_allowed_ids(info.context.user._u)
+            extended_locations = extend_allowed_locations(allowed_location_ids, strict=False)
+            filters.append(Q(location_id__in=extended_locations) | Q(location__isnull=True))
 
         # Duplicates cannot be removed with distinct, as TEXT field is not comparable
         ids = Family.objects.filter(*filters).values_list('id')
