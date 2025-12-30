@@ -693,7 +693,10 @@ class InsureeService:
                 _("Receptionist accounts must be assigned to a Health Facility before they can perform insuree check-ins.")
             )
 
-        existing_checkin = InsureeCheckIn.active.filter(insuree=insuree).order_by('-check_in_date').first()
+        existing_checkin = InsureeCheckIn.active.filter(
+            insuree=insuree,
+            check_in_date__gte=now - timedelta(hours=24)
+        ).order_by('-check_in_date').first()
         if existing_checkin:
             raise ValidationError(_("This insuree already has an active check-in."))
 

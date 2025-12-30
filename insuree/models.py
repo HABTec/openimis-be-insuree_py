@@ -500,6 +500,10 @@ class InsureeIdReservation(core_models.VersionedModel):
         db_table = 'insuree_IdReservation'
 
 class ActiveCheckInManager(models.Manager):
+    """
+    Manager that returns only non-deleted (active) check-in records by filtering is_deleted=False.
+    """
+    
     def get_queryset(self):
         return super().get_queryset().filter(is_deleted=False)
 

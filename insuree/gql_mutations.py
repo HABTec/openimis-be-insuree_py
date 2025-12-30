@@ -823,7 +823,7 @@ class ChangeInsureeFamilyMutation(OpenIMISMutation):
 
 class DeleteInsureeCheckInMutation(OpenIMISMutation):
     """
-    Delete insuree from check-in list
+    Soft delete insuree from check-in list (marks the latest active check-in as deleted)
     """
     _mutation_module = "insuree"
     _mutation_class = "DeleteInsureeCheckInMutation"
@@ -839,10 +839,7 @@ class DeleteInsureeCheckInMutation(OpenIMISMutation):
             insuree = Insuree.objects.get(uuid=(data['insuree_uuid']))
             checkindata = InsureeCheckIn.active.filter(insuree=insuree).order_by('-check_in_date').first()
             if not checkindata:
-                return [{
-                    'message': _("No active check-in found for this insuree."),
-                    'detail': f"Insuree {insuree.uuid} has no active check-ins."
-                }]
+                return None
             checkindata.is_deleted = True
             checkindata.save()
             return None
