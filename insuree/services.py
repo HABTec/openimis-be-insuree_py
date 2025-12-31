@@ -692,15 +692,14 @@ class InsureeService:
             raise ValidationError(
                 _("Receptionist accounts must be assigned to a Health Facility before they can perform insuree check-ins.")
             )
-        
-        last_24_hours = now - timedelta(hours=24)
-        already_checked_in = InsureeCheckIn.objects.filter(
+
+        existing_checkin = InsureeCheckIn.active.filter(
             insuree=insuree,
-            check_in_date__gte=last_24_hours
-        ).exists()
-        if already_checked_in:
-            raise ValidationError(_("This insuree has already been checked in within the last 24 hours."))
-        
+            check_in_date__gte=now - timedelta(hours=24)
+        ).order_by('-check_in_date').first()
+        if existing_checkin:
+            raise ValidationError(_("This insuree already has an active check-in."))
+
         audit_user_id = getattr(self.user, 'id_for_audit', 0)
         InsureeCheckIn.objects.create(
             insuree=insuree,

@@ -203,6 +203,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             last_24_hours = now - timedelta(hours=24)
             filters.append(Q(checkins__check_in_date__gte=last_24_hours))
             filters.append(Q(checkins__health_facility=info.context.user.health_facility))
+            filters.append(Q(checkins__is_deleted=False))
         if not show_history and not kwargs.get('uuid', None):
             filters += filter_validity(**kwargs)
         client_mutation_id = kwargs.get("client_mutation_id", None)

@@ -17,7 +17,7 @@ DEFAULT_CFG = {
     "gql_query_insuree_policy_perms": ["101500"],
     "gql_mutation_create_families_perms": ["101002"],
     "gql_mutation_checkin_insuree_perms" : ["101105"],
-    "gql_mutation_delete_checkin_insuree_perms" : ["101105"],
+    "gql_mutation_delete_checkin_insuree_perms" : ["101106"],
     "gql_mutation_update_families_perms": ["101003"],
     "gql_mutation_delete_families_perms": ["101004"],
     "gql_mutation_create_insurees_perms": ["101102"],
