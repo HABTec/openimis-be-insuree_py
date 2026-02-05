@@ -13,7 +13,7 @@ from location.models import LocationManager
 from product.models import MembershipType
 from core import datetime
 from location.models import HealthFacility
-
+from django.utils import timezone
 class Gender(models.Model):
     code = models.CharField(db_column='Code', primary_key=True, max_length=1)
     gender = models.CharField(
@@ -117,6 +117,7 @@ class Family(core_models.VersionedModel, core_models.ExtendableModel):
         models.DO_NOTHING, db_column='ConfirmationType', blank=True, null=True,
         related_name='families')
     audit_user_id = models.IntegerField(db_column='AuditUserID')
+    enrollment_date = core_fields.DateTimeField(db_column='EnrollmentDate', default=timezone.now)
     # rowid = models.TextField(db_column='RowID', blank=True, null=True)
 
     def __str__(self):
@@ -254,6 +255,7 @@ class Insuree(core_models.VersionedModel, core_models.ExtendableModel):
     gender = models.ForeignKey(Gender, models.DO_NOTHING, db_column='Gender', blank=True, null=True,
                                related_name='insurees')
     dob = core_fields.DateField(db_column='DOB', blank=True, null=True)
+    enrollment_date = core_fields.DateTimeField(db_column='EnrollmentDate', default=timezone.now)
 
     def age(self, reference_date=None):
         if not self.dob:
